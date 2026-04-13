@@ -1,0 +1,6 @@
+HTTP/1.1 400 Bad Request
+content-length: 15
+content-type: text/plain
+access-control-allow-origin: *
+
+Missing blob ID
