@@ -1,9 +1,12 @@
 const std = @import("std");
-const config = @import("config.zig");
 
-pub fn readBody(req: *std.http.Server.Request, allocator: std.mem.Allocator) ![]u8 {
+pub fn readBody(
+    req: *std.http.Server.Request,
+    allocator: std.mem.Allocator,
+    max_bytes: usize,
+) ![]u8 {
     if (req.head.content_length) |cl| {
-        if (cl > config.MAX_UPLOAD_SIZE) return error.PayloadTooLarge;
+        if (cl > max_bytes) return error.BodyTooLarge;
     }
 
     if (req.head.transfer_encoding == .none and req.head.content_length == null) {
@@ -23,9 +26,9 @@ pub fn readBody(req: *std.http.Server.Request, allocator: std.mem.Allocator) ![]
     _ = try body_reader.streamRemaining(&body_writer.writer);
 
     const written = body_writer.written();
-    if (written.len > config.MAX_UPLOAD_SIZE) {
+    if (written.len > max_bytes) {
         body_writer.deinit();
-        return error.PayloadTooLarge;
+        return error.BodyTooLarge;
     }
 
     return try body_writer.toOwnedSlice();
@@ -37,7 +40,11 @@ pub fn extractPathSuffix(target: []const u8, prefix: []const u8) ?[]const u8 {
     return target[prefix.len..];
 }
 
-pub fn respondText(req: *std.http.Server.Request, status: std.http.Status, msg: []const u8) void {
+pub fn respondText(
+    req: *std.http.Server.Request,
+    status: std.http.Status,
+    msg: []const u8,
+) void {
     req.respond(msg, .{
         .status = status,
         .extra_headers = &.{
