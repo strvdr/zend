@@ -1,8 +1,7 @@
 const std = @import("std");
 const blob_format = @import("blob_format");
 
-var wasm_alloc = std.heap.WasmAllocator{};
-const allocator = wasm_alloc.allocator();
+const allocator = std.heap.wasm_allocator;
 
 var result_bytes: []u8 = &[_]u8{};
 var result_filename: []u8 = &[_]u8{};
