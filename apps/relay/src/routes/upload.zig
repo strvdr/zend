@@ -9,14 +9,12 @@ pub fn handleUpload(
     allocator: std.mem.Allocator,
     cfg: runtime_config.RuntimeConfig,
 ) !void {
-    const body = http_helpers.readBody(req, allocator, cfg.max_upload_bytes) catch |err| {
-        if (err == error.BodyTooLarge) {
+    if (req.head.content_length) |cl| {
+        if (cl > cfg.max_upload_bytes) {
             http_helpers.respondText(req, .payload_too_large, "Payload too large");
             return;
         }
-        return err;
-    };
-    defer allocator.free(body);
+    }
 
     const id_buf = ids.randomHex();
     const token_buf = ids.randomHex();
@@ -30,14 +28,52 @@ pub fn handleUpload(
     const meta_path = try storage.metaPath(allocator, cfg.blob_dir, id);
     defer allocator.free(meta_path);
 
-    {
-        const file = try std.fs.cwd().createFile(blob_path, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(body);
+    const tmp_blob_path = try std.fmt.allocPrint(allocator, "{s}.part", .{blob_path});
+    defer allocator.free(tmp_blob_path);
+
+    const cwd = std.fs.cwd();
+
+    var tmp_file_created = false;
+    errdefer {
+        if (tmp_file_created) {
+            cwd.deleteFile(tmp_blob_path) catch {};
+        }
     }
 
     {
-        const file = try std.fs.cwd().createFile(meta_path, .{ .truncate = true });
+        const file = try cwd.createFile(tmp_blob_path, .{ .truncate = true });
+        defer file.close();
+
+        tmp_file_created = true;
+
+        var body_buf: [64 * 1024]u8 = undefined;
+        var file_buf: [64 * 1024]u8 = undefined;
+
+        const body_reader = req.server.reader.bodyReader(
+            &body_buf,
+            req.head.transfer_encoding,
+            req.head.content_length,
+        );
+
+        var file_writer = file.writer(&file_buf);
+
+        _ = try body_reader.streamRemaining(&file_writer.interface);
+        try file_writer.interface.flush();
+
+        const written = try file.getEndPos();
+        if (written > cfg.max_upload_bytes) {
+            http_helpers.respondText(req, .payload_too_large, "Payload too large");
+            return;
+        }
+
+        try file.sync();
+    }
+
+    try cwd.rename(tmp_blob_path, blob_path);
+    errdefer cwd.deleteFile(blob_path) catch {};
+
+    {
+        const file = try cwd.createFile(meta_path, .{ .truncate = true });
         defer file.close();
 
         var buf: [1024]u8 = undefined;

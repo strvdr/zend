@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { encryptFile } from "@/lib/wasm/zend";
+import { encryptFileStream } from "@/lib/wasm/zend";
 
 type UploadResponse = {
   id: string;
@@ -24,6 +24,7 @@ export default function UploadPage() {
   const [mounted, setMounted] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "encrypting" | "uploading">("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [shareUrl, setShareUrl] = useState("");
@@ -37,16 +38,17 @@ export default function UploadPage() {
   const status = useMemo(() => {
     if (error) return "error";
     if (result) return "ready";
-    if (isUploading) return "encrypting";
+    if (isUploading) return phase === "uploading" ? "uploading" : "encrypting";
     if (file) return "staged";
     return "idle";
-  }, [error, result, isUploading, file]);
+  }, [error, result, isUploading, file, phase]);
 
   async function handleUpload() {
     if (!relayUrl) {
       setError("NEXT_PUBLIC_RELAY_URL is missing.");
       return;
     }
+
     if (!file) {
       setError("Choose a file first.");
       return;
@@ -58,13 +60,20 @@ export default function UploadPage() {
       setShareUrl("");
       setCopied(false);
       setIsUploading(true);
+      setPhase("encrypting");
 
-      const { blob, keyB64 } = await encryptFile(file);
+      const { body, keyB64 } = await encryptFileStream(file);
+
+      setPhase("uploading");
+
+      console.log(body, body instanceof ReadableStream);
 
       const response = await fetch(`${relayUrl}/upload`, {
         method: "POST",
-        body: blob,
-      });
+        body,
+        // Required in browsers for request streaming.
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
 
       if (!response.ok) {
         const text = await response.text();
@@ -74,10 +83,12 @@ export default function UploadPage() {
       const json = (await response.json()) as UploadResponse;
       setResult(json);
       setShareUrl(`${appUrl}/d/${json.id}#${keyB64}`);
+      setPhase("idle");
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Upload failed unexpectedly.";
       setError(message);
+      setPhase("idle");
     } finally {
       setIsUploading(false);
     }
@@ -96,6 +107,7 @@ export default function UploadPage() {
     setShareUrl("");
     setError("");
     setCopied(false);
+    setPhase("idle");
   }
 
   if (!mounted) return null;
@@ -103,13 +115,11 @@ export default function UploadPage() {
   return (
     <main className="page-shell">
       <div className="page-wrap">
-        {/* Header */}
         <header className="header">
           <span className="header-path">zend</span>
           <span className="header-dot" data-status={status} />
         </header>
 
-        {/* Drop zone */}
         <label
           className={`dropzone${dragging ? " dragging" : ""}${file ? " has-file" : ""}`}
           onDragEnter={() => setDragging(true)}
@@ -118,13 +128,17 @@ export default function UploadPage() {
         >
           <input
             type="file"
+            disabled={isUploading}
             onChange={(e) => {
               setFile(e.target.files?.[0] ?? null);
               setResult(null);
               setShareUrl("");
               setError("");
+              setCopied(false);
+              setPhase("idle");
             }}
           />
+
           {file ? (
             <div className="file-info">
               <span className="file-name">{file.name}</span>
@@ -137,30 +151,37 @@ export default function UploadPage() {
           )}
         </label>
 
-        {/* Actions */}
         <div className="actions">
           <button
             className="button button-primary"
             onClick={handleUpload}
             disabled={!file || isUploading}
           >
-            {isUploading ? "encrypting..." : "create link"}
+            {phase === "encrypting"
+              ? "encrypting…"
+              : phase === "uploading"
+                ? "uploading…"
+                : "create link"}
           </button>
+
           {file && (
-            <button className="button button-ghost" onClick={resetSession}>
+            <button
+              className="button button-ghost"
+              onClick={resetSession}
+              disabled={isUploading}
+            >
               clear
             </button>
           )}
         </div>
 
-        {/* Error */}
         {error && <div className="notice notice-error">{error}</div>}
 
-        {/* Result */}
         {result && (
           <section className="result">
             <div className="result-label">share link</div>
             <div className="result-url">{shareUrl}</div>
+
             <div className="result-actions">
               <button className="button button-primary" onClick={handleCopy}>
                 {copied ? "copied" : "copy"}
@@ -174,6 +195,7 @@ export default function UploadPage() {
                 open
               </a>
             </div>
+
             <div className="result-meta">
               <span>id: {result.id}</span>
               <span className="separator">·</span>
@@ -184,13 +206,12 @@ export default function UploadPage() {
           </section>
         )}
 
-        {/* Footer info */}
         <footer className="footer">
           <span>encrypted client-side</span>
           <span className="separator">·</span>
           <span>relay sees ciphertext only</span>
           <span className="separator">·</span>
-          <span>expires in 24h</span>
+          <span>streamed upload path</span>
         </footer>
       </div>
     </main>

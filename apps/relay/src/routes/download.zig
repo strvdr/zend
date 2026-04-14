@@ -37,5 +37,5 @@ pub fn handleDownload(
         },
     });
 
-    storage.deleteBlob(allocator, cfg.blob_dir, id);
+    //storage.deleteBlob(allocator, cfg.blob_dir, id);
 }
