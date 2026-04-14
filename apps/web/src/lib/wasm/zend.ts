@@ -45,6 +45,14 @@ type WasmExports = {
   decrypt_done: () => number;
 };
 
+function hex(bytes: Uint8Array) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function logDebug(label: string, value: unknown) {
+  console.log(`[zend] ${label}`, value);
+}
+
 function getExports(instance: WebAssembly.Instance): WasmExports {
   return instance.exports as unknown as WasmExports;
 }
@@ -90,7 +98,9 @@ function allocAndWrite(exports: WasmExports, bytes: Uint8Array) {
   if (!ptr) {
     throw new Error("alloc_input failed");
   }
+
   writeBytes(exports.memory, ptr, bytes);
+
   return {
     ptr,
     len: bytes.length,
@@ -103,14 +113,35 @@ function allocAndWrite(exports: WasmExports, bytes: Uint8Array) {
 function keyToB64(key: Uint8Array) {
   let s = "";
   for (let i = 0; i < key.length; i++) s += String.fromCharCode(key[i]);
-  return btoa(s);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function keyFromB64(keyB64: string) {
-  const raw = atob(keyB64);
+  const padded = keyB64
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(keyB64.length / 4) * 4, "=");
+
+  const raw = atob(padded);
   const out = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
   return out;
+}
+
+async function postBytes(url: string, bytes: Uint8Array) {
+  logDebug("post bytes", { url, bytes: bytes.length });
+
+  const response = await fetch(url, {
+    method: "POST",
+    body: bytes,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed with ${response.status}`);
+  }
+
+  return response;
 }
 
 export async function encryptFile(file: File) {
@@ -124,6 +155,10 @@ export async function encryptFile(file: File) {
   const filenameBytes = utf8(file.name);
   const key = crypto.getRandomValues(new Uint8Array(32));
 
+  logDebug("batch upload key b64", keyToB64(key));
+  logDebug("batch upload key hex", hex(key));
+  logDebug("batch upload file", { name: file.name, size: file.size });
+
   const input = allocAndWrite(exports, fileBytes);
   const name = allocAndWrite(exports, filenameBytes);
   const keyBuf = allocAndWrite(exports, key);
@@ -134,12 +169,13 @@ export async function encryptFile(file: File) {
       input.len,
       name.ptr,
       name.len,
-      keyBuf.ptr
+      keyBuf.ptr,
     );
 
     assertStatus(exports, status);
 
     const blob = takeResultBytes(exports);
+    logDebug("batch encrypted blob bytes", blob.length);
     exports.clear_result();
 
     return {
@@ -153,10 +189,11 @@ export async function encryptFile(file: File) {
   }
 }
 
-export async function encryptFileStream(file: File): Promise<{
-  body: ReadableStream<Uint8Array>;
-  keyB64: string;
-}> {
+export async function uploadEncryptedFileChunked(
+  relayUrl: string,
+  file: File,
+  onPhase?: (phase: "encrypting" | "uploading") => void,
+): Promise<{ id: string; token: string; keyB64: string }> {
   const wasm = await loadWasm();
   const exports = getExports(wasm);
 
@@ -169,72 +206,149 @@ export async function encryptFileStream(file: File): Promise<{
   const name = allocAndWrite(exports, filenameBytes);
   const keyBuf = allocAndWrite(exports, key);
 
-  const beginStatus = exports.begin_encrypt(
-    name.ptr,
-    name.len,
-    file.size,
-    keyBuf.ptr
-  );
+  logDebug("upload key b64", keyToB64(key));
+  logDebug("upload key hex", hex(key));
+  logDebug("upload file", { name: file.name, size: file.size });
 
-  name.free();
-  keyBuf.free();
+  let uploadId = "";
+  let uploadToken = "";
+  let totalCiphertextBytes = 0;
 
-  assertStatus(exports, beginStatus);
+  try {
+    const startRes = await fetch(`${relayUrl}/upload/start`, {
+      method: "POST",
+    });
 
-  const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    if (!startRes.ok) {
+      const text = await startRes.text();
+      throw new Error(text || `Upload start failed with ${startRes.status}`);
+    }
+
+    const started = (await startRes.json()) as { id: string; token: string };
+    uploadId = started.id;
+    uploadToken = started.token;
+
+    logDebug("upload session started", { id: uploadId, token: uploadToken });
+
+    onPhase?.("encrypting");
+
+    const beginStatus = exports.begin_encrypt(
+      name.ptr,
+      name.len,
+      file.size,
+      keyBuf.ptr,
+    );
+    assertStatus(exports, beginStatus);
+
+    logDebug("begin_encrypt complete", true);
+
+    let index = 0;
+
+    const metadataFrame = takeResultBytes(exports);
+    exports.clear_result();
+
+    if (metadataFrame.length === 0) {
+      throw new Error("Missing metadata frame");
+    }
+
+    totalCiphertextBytes += metadataFrame.length;
+    logDebug("metadata frame bytes", metadataFrame.length);
+
+    onPhase?.("uploading");
+
+    await postBytes(
+      `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
+      metadataFrame,
+    );
+    index += 1;
+
+    const reader = file.stream().getReader();
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      const input = allocAndWrite(exports, chunk);
+
       try {
-        const first = takeResultBytes(exports);
-        if (first.length > 0) controller.enqueue(first);
-        exports.clear_result();
-
-        const reader = file.stream().getReader();
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
-          const input = allocAndWrite(exports, chunk);
-
-          try {
-            const status = exports.encrypt_chunk(input.ptr, input.len);
-            assertStatus(exports, status);
-          } finally {
-            input.free();
-          }
-
-          const out = takeResultBytes(exports);
-          if (out.length > 0) controller.enqueue(out);
-          exports.clear_result();
-        }
-
-        const finishStatus = exports.finish_encrypt();
-        assertStatus(exports, finishStatus);
-
-        const finalChunk = takeResultBytes(exports);
-        if (finalChunk.length > 0) controller.enqueue(finalChunk);
-        exports.clear_result();
-
-        controller.close();
-      } catch (err) {
-        controller.error(err);
+        const status = exports.encrypt_chunk(input.ptr, input.len);
+        assertStatus(exports, status);
       } finally {
-        exports.clear_sessions();
-        exports.clear_result();
+        input.free();
       }
-    },
 
-    cancel() {
-      exports.clear_sessions();
+      const frame = takeResultBytes(exports);
       exports.clear_result();
-    },
-  });
 
-  return {
-    body,
-    keyB64: keyToB64(key),
-  };
+      if (frame.length === 0) {
+        throw new Error(`Missing encrypted frame at index ${index}`);
+      }
+
+      totalCiphertextBytes += frame.length;
+      logDebug("append chunk", {
+        index,
+        plaintextBytes: chunk.length,
+        ciphertextFrameBytes: frame.length,
+        totalCiphertextBytes,
+      });
+
+      await postBytes(
+        `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
+        frame,
+      );
+      index += 1;
+    }
+
+    const finishStatus = exports.finish_encrypt();
+    assertStatus(exports, finishStatus);
+
+    const doneFrame = takeResultBytes(exports);
+    exports.clear_result();
+
+    if (doneFrame.length === 0) {
+      throw new Error("Missing DONE frame");
+    }
+
+    totalCiphertextBytes += doneFrame.length;
+    logDebug("done frame bytes", doneFrame.length);
+    logDebug("total uploaded ciphertext bytes", totalCiphertextBytes);
+
+    await postBytes(
+      `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
+      doneFrame,
+    );
+
+    const finishRes = await fetch(
+      `${relayUrl}/upload/finish/${uploadId}?token=${encodeURIComponent(uploadToken)}`,
+      { method: "POST" },
+    );
+
+    if (!finishRes.ok) {
+      const text = await finishRes.text();
+      throw new Error(text || `Upload finish failed with ${finishRes.status}`);
+    }
+
+    const finalJson = (await finishRes.json()) as { id: string; token: string };
+
+    logDebug("upload finished", {
+      id: finalJson.id,
+      token: finalJson.token,
+      keyB64: keyToB64(key),
+      totalCiphertextBytes,
+    });
+
+    return {
+      id: finalJson.id,
+      token: finalJson.token,
+      keyB64: keyToB64(key),
+    };
+  } finally {
+    name.free();
+    keyBuf.free();
+    exports.clear_sessions();
+    exports.clear_result();
+  }
 }
 
 export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
@@ -247,6 +361,10 @@ export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
   const blobBytes = new Uint8Array(blob);
   const key = keyFromB64(keyB64);
 
+  logDebug("download key b64", keyB64);
+  logDebug("download key hex", hex(key));
+  logDebug("download ciphertext bytes", blobBytes.length);
+
   const input = allocAndWrite(exports, blobBytes);
   const keyBuf = allocAndWrite(exports, key);
 
@@ -257,6 +375,11 @@ export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
     const fileBytes = takeResultBytes(exports);
     const filename = takeResultFilename(exports);
 
+    logDebug("decrypt success", {
+      filename,
+      plaintextBytes: fileBytes.length,
+    });
+
     exports.clear_result();
 
     return { filename, fileBytes };
@@ -266,7 +389,10 @@ export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
   }
 }
 
-export async function decryptBlobStream(blob: ReadableStream<Uint8Array>, keyB64: string) {
+export async function decryptBlobStream(
+  blob: ReadableStream<Uint8Array>,
+  keyB64: string,
+) {
   const wasm = await loadWasm();
   const exports = getExports(wasm);
 
@@ -275,6 +401,9 @@ export async function decryptBlobStream(blob: ReadableStream<Uint8Array>, keyB64
 
   const key = keyFromB64(keyB64);
   const keyBuf = allocAndWrite(exports, key);
+
+  logDebug("stream download key b64", keyB64);
+  logDebug("stream download key hex", hex(key));
 
   try {
     const beginStatus = exports.begin_decrypt(keyBuf.ptr);
@@ -285,6 +414,7 @@ export async function decryptBlobStream(blob: ReadableStream<Uint8Array>, keyB64
 
   let filename = "";
   const parts: Uint8Array[] = [];
+  let totalCiphertextBytes = 0;
 
   try {
     const reader = blob.getReader();
@@ -294,6 +424,8 @@ export async function decryptBlobStream(blob: ReadableStream<Uint8Array>, keyB64
       if (done) break;
 
       const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      totalCiphertextBytes += chunk.length;
+
       const input = allocAndWrite(exports, chunk);
 
       try {
@@ -304,11 +436,21 @@ export async function decryptBlobStream(blob: ReadableStream<Uint8Array>, keyB64
       }
 
       const out = takeResultBytes(exports);
-      if (out.length > 0) parts.push(out);
+      if (out.length > 0) {
+        parts.push(out);
+      }
 
       if (!filename && exports.result_filename_len() > 0) {
         filename = takeResultFilename(exports);
       }
+
+      logDebug("stream decrypt step", {
+        ciphertextChunkBytes: chunk.length,
+        totalCiphertextBytes,
+        plaintextProducedBytes: out.length,
+        filename,
+        done: exports.decrypt_done() === 1,
+      });
 
       exports.clear_result();
 
@@ -324,6 +466,12 @@ export async function decryptBlobStream(blob: ReadableStream<Uint8Array>, keyB64
       fileBytes.set(p, offset);
       offset += p.length;
     }
+
+    logDebug("stream decrypt success", {
+      filename,
+      plaintextBytes: fileBytes.length,
+      totalCiphertextBytes,
+    });
 
     return { filename, fileBytes };
   } finally {

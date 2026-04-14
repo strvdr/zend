@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { encryptFileStream } from "@/lib/wasm/zend";
+import { uploadEncryptedFileChunked } from "@/lib/wasm/zend";
 
 type UploadResponse = {
   id: string;
@@ -62,27 +62,17 @@ export default function UploadPage() {
       setIsUploading(true);
       setPhase("encrypting");
 
-      const { body, keyB64 } = await encryptFileStream(file);
+      const uploaded = await uploadEncryptedFileChunked(
+        relayUrl,
+        file,
+        (nextPhase) => setPhase(nextPhase),
+      );
 
-      setPhase("uploading");
-
-      console.log(body, body instanceof ReadableStream);
-
-      const response = await fetch(`${relayUrl}/upload`, {
-        method: "POST",
-        body,
-        // Required in browsers for request streaming.
-        duplex: "half",
-      } as RequestInit & { duplex: "half" });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `Upload failed with ${response.status}`);
-      }
-
-      const json = (await response.json()) as UploadResponse;
-      setResult(json);
-      setShareUrl(`${appUrl}/d/${json.id}#${keyB64}`);
+      setResult({
+        id: uploaded.id,
+        token: uploaded.token,
+      });
+      setShareUrl(`${appUrl}/d/${uploaded.id}#${uploaded.keyB64}`);
       setPhase("idle");
     } catch (err) {
       const message =
@@ -211,7 +201,7 @@ export default function UploadPage() {
           <span className="separator">·</span>
           <span>relay sees ciphertext only</span>
           <span className="separator">·</span>
-          <span>streamed upload path</span>
+          <span>chunked upload path</span>
         </footer>
       </div>
     </main>

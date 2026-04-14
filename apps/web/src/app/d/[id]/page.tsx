@@ -46,6 +46,11 @@ function DownloadClient({ id }: { id: string }) {
       return;
     }
 
+    console.log("[download-page] id", id);
+    console.log("[download-page] fragment key", keyB64);
+    console.log("[download-page] relay url", relayUrl);
+    console.log("[download-page] download url", downloadUrl);
+
     try {
       setError("");
       setIsComplete(false);
@@ -58,7 +63,14 @@ function DownloadClient({ id }: { id: string }) {
       }
 
       const encryptedBlob = await response.arrayBuffer();
+      console.log("[download-page] ciphertext bytes", encryptedBlob.byteLength);
+
       const { filename, fileBytes } = await decryptBlob(encryptedBlob, keyB64);
+
+      console.log("[download-page] decrypt result", {
+        filename,
+        plaintextBytes: fileBytes.length,
+      });
 
       const objectUrl = window.URL.createObjectURL(new Blob([fileBytes]));
       const a = document.createElement("a");
@@ -71,6 +83,7 @@ function DownloadClient({ id }: { id: string }) {
 
       setIsComplete(true);
     } catch (err) {
+      console.error("[download-page] download error", err);
       setError(err instanceof Error ? err.message : "Download failed.");
     } finally {
       setIsDownloading(false);
@@ -80,13 +93,11 @@ function DownloadClient({ id }: { id: string }) {
   return (
     <main className="page-shell">
       <div className="page-wrap">
-        {/* Header */}
         <header className="header">
           <span className="header-path">zend</span>
           <span className="header-dot" data-status={status} />
         </header>
 
-        {/* Transfer info */}
         <div className="transfer-box">
           <div className="transfer-id">
             <span className="transfer-label">transfer</span>
@@ -101,7 +112,6 @@ function DownloadClient({ id }: { id: string }) {
           </div>
         </div>
 
-        {/* Action */}
         <div className="actions">
           <button
             className="button button-primary"
@@ -117,10 +127,8 @@ function DownloadClient({ id }: { id: string }) {
           </button>
         </div>
 
-        {/* Error */}
         {error && <div className="notice notice-error">{error}</div>}
 
-        {/* Success */}
         {isComplete && (
           <div className="result">
             <div className="result-label">complete</div>
@@ -132,7 +140,6 @@ function DownloadClient({ id }: { id: string }) {
           </div>
         )}
 
-        {/* Footer */}
         <footer className="footer">
           <span>decrypted client-side</span>
           <span className="separator">·</span>

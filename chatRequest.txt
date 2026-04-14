@@ -1,0 +1,266 @@
+const std = @import("std");
+const runtime_config = @import("runtime_config.zig");
+const http_helpers = @import("http_helpers.zig");
+const upload = @import("routes/upload.zig");
+const download = @import("routes/download.zig");
+const delete = @import("routes/delete.zig");
+const reaper = @import("reaper.zig");
+
+fn pathWithoutQuery(target: []const u8) []const u8 {
+    return target[0 .. std.mem.indexOfScalar(u8, target, '?') orelse target.len];
+}
+
+fn handleConnection(
+    conn: std.net.Server.Connection,
+    allocator: std.mem.Allocator,
+    cfg: runtime_config.RuntimeConfig,
+) !void {
+    defer conn.stream.close();
+
+    var recv_buffer: [8192]u8 = undefined;
+    var server = std.http.Server.init(conn, &recv_buffer);
+
+    while (true) {
+        var req = server.receiveHead() catch |err| switch (err) {
+            error.HttpConnectionClosing => break,
+            else => return err,
+        };
+
+        const path = pathWithoutQuery(req.head.target);
+
+        if (req.head.method == .OPTIONS) {
+            req.respond("", .{
+                .status = .no_content,
+                .extra_headers = &.{
+                    .{ .name = "access-control-allow-origin", .value = "*" },
+                    .{ .name = "access-control-allow-methods", .value = "GET, POST, DELETE, OPTIONS" },
+                    .{ .name = "access-control-allow-headers", .value = "content-type" },
+                },
+            }) catch {};
+            continue;
+        }
+
+        if (std.mem.eql(u8, path, "/upload/start")) {
+            upload.handleStart(&req, allocator, cfg) catch |err| {
+                std.log.err("upload start failed: {s}", .{@errorName(err)});
+                http_helpers.respondText(&req, .internal_server_error, "Upload start failed");
+            };
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, path, "/upload/append/")) {
+            upload.handleAppend(&req, allocator, cfg) catch |err| {
+                std.log.err("upload append failed: {s}", .{@errorName(err)});
+                http_helpers.respondText(&req, .internal_server_error, "Upload append failed");
+            };
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, path, "/upload/finish/")) {
+            upload.handleFinish(&req, allocator, cfg) catch |err| {
+                std.log.err("upload finish failed: {s}", .{@errorName(err)});
+                http_helpers.respondText(&req, .internal_server_error, "Upload finish failed");
+            };
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, path, "/download/")) {
+            download.handleDownload(&req, allocator, cfg) catch |err| {
+                std.log.err("download failed: {s}", .{@errorName(err)});
+                http_helpers.respondText(&req, .internal_server_error, "Download failed");
+            };
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, path, "/delete/")) {
+            delete.handleDelete(&req, allocator, cfg) catch |err| {
+                std.log.err("delete failed: {s}", .{@errorName(err)});
+                http_helpers.respondText(&req, .internal_server_error, "Delete failed");
+            };
+            continue;
+        }
+
+        http_helpers.respondText(&req, .not_found, "Not found");
+    }
+}
+
+pub fn main() !void {
+    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa_state.deinit();
+    const allocator = gpa_state.allocator();
+
+    const cfg = try runtime_config.load(allocator);
+
+    var listener = try std.net.Address.parseIp4("0.0.0.0", cfg.port);
+    var server = try listener.listen(.{
+        .reuse_address = true,
+    });
+    defer server.deinit();
+
+    std.log.info("zend-relay listening on 0.0.0.0:{d}", .{cfg.port});
+    std.log.info("blob_dir={s} max_upload_bytes={d} ttl_seconds={d}", .{
+        cfg.blob_dir,
+        cfg.max_upload_bytes,
+        cfg.ttl_seconds,
+    });
+
+    const reaper_thread = try std.Thread.spawn(.{}, reaper.reapLoop, .{ allocator, cfg });
+    reaper_thread.detach();
+
+    while (true) {
+        const conn = try server.accept();
+        const thread = try std.Thread.spawn(.{}, handleConnection, .{ conn, allocator, cfg });
+        thread.detach();
+    }
+}
+const std = @import("std");
+const config = @import("config.zig");
+const runtime_config = @import("runtime_config.zig");
+const storage = @import("storage.zig");
+
+pub fn reapLoop(
+    allocator: std.mem.Allocator,
+    cfg: runtime_config.RuntimeConfig,
+) void {
+    while (true) {
+        std.Thread.sleep(config.REAP_INTERVAL_NS);
+        reapOnce(allocator, cfg);
+    }
+}
+
+pub fn reapOnce(
+    allocator: std.mem.Allocator,
+    cfg: runtime_config.RuntimeConfig,
+) void {
+    var dir = std.fs.cwd().openDir(cfg.blob_dir, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (it.next() catch null) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".meta")) continue;
+
+        const meta_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ cfg.blob_dir, entry.name }) catch continue;
+        defer allocator.free(meta_path);
+
+        const content = std.fs.cwd().readFileAlloc(allocator, meta_path, 1024) catch continue;
+        defer allocator.free(content);
+
+        const newline = std.mem.indexOfScalar(u8, content, '\n') orelse continue;
+        const ts_str = std.mem.trim(u8, content[newline + 1 ..], &std.ascii.whitespace);
+        const created = std.fmt.parseInt(i64, ts_str, 10) catch continue;
+
+        if (std.time.timestamp() - created > cfg.ttl_seconds) {
+            const id = entry.name[0 .. entry.name.len - ".meta".len];
+            storage.deleteBlob(allocator, cfg.blob_dir, id);
+            std.log.info("reaped expired: {s}", .{id});
+        }
+    }
+}
+25:pub fn init(in: *Reader, out: *Writer) Server {
+//! Handles a single connection lifecycle.
+
+const std = @import("../std.zig");
+const http = std.http;
+const mem = std.mem;
+const Uri = std.Uri;
+const assert = std.debug.assert;
+const testing = std.testing;
+const Writer = std.Io.Writer;
+const Reader = std.Io.Reader;
+
+const Server = @This();
+
+/// Data from the HTTP server to the HTTP client.
+out: *Writer,
+reader: http.Reader,
+
+/// Initialize an HTTP server that can respond to multiple requests on the same
+/// connection.
+///
+/// The buffer of `in` must be large enough to store the client's entire HTTP
+/// header, otherwise `receiveHead` returns `error.HttpHeadersOversize`.
+///
+/// The returned `Server` is ready for `receiveHead` to be called.
+pub fn init(in: *Reader, out: *Writer) Server {
+    return .{
+        .reader = .{
+            .in = in,
+            .state = .ready,
+            // Populated when `http.Reader.bodyReader` is called.
+            .interface = undefined,
+            .max_head_len = in.buffer.len,
+        },
+        .out = out,
+    };
+}
+
+pub const ReceiveHeadError = http.Reader.HeadError || error{
+    /// Client sent headers that did not conform to the HTTP protocol.
+    ///
+    /// To find out more detailed diagnostics, `Request.head_buffer` can be
+    /// passed directly to `Request.Head.parse`.
+    HttpHeadersInvalid,
+};
+
+pub fn receiveHead(s: *Server) ReceiveHeadError!Request {
+    const head_buffer = try s.reader.receiveHead();
+    return .{
+        .server = s,
+        .head_buffer = head_buffer,
+        // No need to track the returned error here since users can repeat the
+        // parse with the header buffer to get detailed diagnostics.
+        .head = Request.Head.parse(head_buffer) catch return error.HttpHeadersInvalid,
+    };
+}
+
+pub const Request = struct {
+    server: *Server,
+    /// Pointers in this struct are invalidated when the request body stream is
+    /// initialized.
+    head: Head,
+    head_buffer: []const u8,
+    respond_err: ?RespondError = null,
+
+    pub const RespondError = error{
+        /// The request contained an `expect` header with an unrecognized value.
+        HttpExpectationFailed,
+    };
+
+    pub const Head = struct {
+        method: http.Method,
+        target: []const u8,
+        version: http.Version,
+        expect: ?[]const u8,
+        content_type: ?[]const u8,
+        content_length: ?u64,
+        transfer_encoding: http.TransferEncoding,
+        transfer_compression: http.ContentEncoding,
+        keep_alive: bool,
+
+2105:pub fn reader(file: File, buffer: []u8) Reader {
+2112:pub fn readerStreaming(file: File, buffer: []u8) Reader {
+2120:pub fn writer(file: File, buffer: []u8) Writer {
+2127:pub fn writerStreaming(file: File, buffer: []u8) Writer {
+2312:    pub fn reader(stream: Stream, buffer: []u8) Reader {
+2316:    pub fn writer(stream: Stream, buffer: []u8) Writer {
+2395:    pub const Connection = struct {
+2396-        stream: Stream,
+2397-        address: Address,
+2398-    };
+2399-
+2400-    pub fn deinit(s: *Server) void {
+2401-        s.stream.close();
+2402-        s.* = undefined;
+2403-    }
+2404-
+2405-    pub const AcceptError = posix.AcceptError;
+2406-
+2407-    /// Blocks until a client connects to the server. The returned `Connection` has
+2408-    /// an open stream.
+2409-    pub fn accept(s: *Server) AcceptError!Connection {
+2410-        var accepted_addr: Address = undefined;
+2411-        var addr_len: posix.socklen_t = @sizeOf(Address);
+2412-        const fd = try posix.accept(s.stream.handle, &accepted_addr.any, &addr_len, posix.SOCK.CLOEXEC);
+2413-        return .{
+2414-            .stream = .{ .handle = fd },
+2415-            .address = accepted_addr,
