@@ -27,7 +27,12 @@ function DownloadClient({ id }: { id: string }) {
     return `${relayUrl}/download/${id}`;
   }, [relayUrl, id]);
 
-  const activeStage = error ? 0 : isComplete ? 4 : isDownloading ? 3 : 1;
+  const status = useMemo(() => {
+    if (error) return "error";
+    if (isComplete) return "done";
+    if (isDownloading) return "decrypting";
+    return "idle";
+  }, [error, isComplete, isDownloading]);
 
   async function handleDownload() {
     if (!relayUrl) {
@@ -72,161 +77,69 @@ function DownloadClient({ id }: { id: string }) {
     }
   }
 
-  function stageClass(index: number) {
-    if (error && index >= 2) return "stage-error";
-    if (isComplete && index <= 3) return "stage-done";
-    if (isDownloading && index < activeStage) return "stage-done";
-    if (isDownloading && index === activeStage) return "stage-active";
-    if (!isDownloading && !isComplete && index === 1) return "stage-active";
-    return "stage-idle";
-  }
-
-  function stageText(index: number) {
-    if (error && index >= 2) return "fault";
-    if (isComplete && index <= 3) return "done";
-    if (isDownloading && index < activeStage) return "done";
-    if (isDownloading && index === activeStage) return "live";
-    if (!isDownloading && !isComplete && index === 1) return "ready";
-    return "idle";
-  }
-
   return (
     <main className="page-shell">
       <div className="page-wrap">
-        <section className="session-header">
-          <div className="session-top">
-            <div className="session-title">
-              <span className="session-chip">zend://retrieval capsule</span>
-              <h1>payload restoration console</h1>
-            </div>
-            <div className="session-status">
-              {isComplete
-                ? "payload restored"
-                : isDownloading
-                  ? "restoring"
-                  : "awaiting retrieval"}
+        {/* Header */}
+        <header className="header">
+          <span className="header-path">zend</span>
+          <span className="header-dot" data-status={status} />
+        </header>
+
+        {/* Transfer info */}
+        <div className="transfer-box">
+          <div className="transfer-id">
+            <span className="transfer-label">transfer</span>
+            <span className="transfer-value">{id}</span>
+          </div>
+          <div className="transfer-checks">
+            <span className={hasFragmentKey ? "" : "check-missing"}>
+              key: {hasFragmentKey ? "present" : "missing"}
+            </span>
+            <span className="separator">·</span>
+            <span>single-use</span>
+          </div>
+        </div>
+
+        {/* Action */}
+        <div className="actions">
+          <button
+            className="button button-primary"
+            onClick={handleDownload}
+            disabled={isDownloading || isComplete}
+            style={{ flex: 1 }}
+          >
+            {isComplete
+              ? "download complete"
+              : isDownloading
+                ? "decrypting..."
+                : "download & decrypt"}
+          </button>
+        </div>
+
+        {/* Error */}
+        {error && <div className="notice notice-error">{error}</div>}
+
+        {/* Success */}
+        {isComplete && (
+          <div className="result">
+            <div className="result-label">complete</div>
+            <div className="result-meta">
+              <span>file saved to downloads</span>
+              <span className="separator">·</span>
+              <span>relay copy consumed</span>
             </div>
           </div>
+        )}
 
-          <div className="session-grid">
-            <div className="session-stat">
-              <div className="session-stat-label">transfer_id</div>
-              <div className="session-stat-value">{id}</div>
-            </div>
-            <div className="session-stat">
-              <div className="session-stat-label">key_source</div>
-              <div className="session-stat-value">url_fragment</div>
-            </div>
-            <div className="session-stat">
-              <div className="session-stat-label">relay_mode</div>
-              <div className="session-stat-value">single serve</div>
-            </div>
-            <div className="session-stat">
-              <div className="session-stat-label">target</div>
-              <div className="session-stat-value">{relayUrl ?? "unset"}</div>
-            </div>
-          </div>
-        </section>
-
-        <section className="panel-grid">
-          <div className="panel">
-            <div className="panel-header">
-              <div className="panel-title">retrieval pipeline</div>
-              <div className="muted">local restoration path</div>
-            </div>
-
-            <div className="panel-body stack">
-              <div className="pipeline">
-                <div className="stage-row">
-                  <div className="stage-index">[01]</div>
-                  <div className="stage-name">receive ciphertext</div>
-                  <div className={`stage-state ${stageClass(1)}`}>
-                    {stageText(1)}
-                  </div>
-                </div>
-                <div className="stage-row">
-                  <div className="stage-index">[02]</div>
-                  <div className="stage-name">validate capsule</div>
-                  <div className={`stage-state ${stageClass(2)}`}>
-                    {stageText(2)}
-                  </div>
-                </div>
-                <div className="stage-row">
-                  <div className="stage-index">[03]</div>
-                  <div className="stage-name">restore payload locally</div>
-                  <div className={`stage-state ${stageClass(3)}`}>
-                    {stageText(3)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="actions">
-                <button
-                  className="button"
-                  onClick={handleDownload}
-                  disabled={isDownloading || isComplete}
-                >
-                  {isComplete
-                    ? "retrieval complete"
-                    : isDownloading
-                      ? "retrieval in progress..."
-                      : "begin retrieval"}
-                </button>
-              </div>
-
-              {error ? <div className="notice notice-error">{error}</div> : null}
-
-              {isComplete ? (
-                <div className="notice notice-success">
-                  payload restored locally; relay copy consumed
-                </div>
-              ) : null}
-
-              <div className="helper">
-                the relay delivers the encrypted blob once, then removes it from
-                storage.
-              </div>
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-header">
-              <div className="panel-title">capsule facts</div>
-              <div className="muted">inspection view</div>
-            </div>
-
-            <div className="panel-body stack">
-              <div className="download-icon">↓</div>
-
-              <div className="kv-grid">
-                <div className="kv-row">
-                  <div className="kv-key">fragment_key</div>
-                  <div className="kv-value">{hasFragmentKey ? "present" : "missing"}</div>
-                </div>
-                <div className="kv-row">
-                  <div className="kv-key">decryption_site</div>
-                  <div className="kv-value">local browser runtime</div>
-                </div>
-                <div className="kv-row">
-                  <div className="kv-key">relay_visibility</div>
-                  <div className="kv-value">ciphertext only</div>
-                </div>
-              </div>
-
-              <div className="mini-log">
-                <div className="log-line">
-                  <strong>fetch</strong> relay blob requested by transfer id
-                </div>
-                <div className="log-line">
-                  <strong>key</strong> fragment not transmitted upstream
-                </div>
-                <div className="log-line">
-                  <strong>restore</strong> plaintext reconstructed client-side
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
+        {/* Footer */}
+        <footer className="footer">
+          <span>decrypted client-side</span>
+          <span className="separator">·</span>
+          <span>relay sees ciphertext only</span>
+          <span className="separator">·</span>
+          <span>key never leaves your browser</span>
+        </footer>
       </div>
     </main>
   );
