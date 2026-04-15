@@ -110,8 +110,6 @@ export default function HomePage() {
         </section>
 
         <footer className="footer">
-          <span>open source</span>
-          <span className="separator">·</span>
           <span>no accounts</span>
           <span className="separator">·</span>
           <span>no tracking</span>
