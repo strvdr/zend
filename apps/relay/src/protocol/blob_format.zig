@@ -222,9 +222,14 @@ pub const DecryptSession = struct {
         while (true) {
             if (self.pending.items.len - pos < pkt.FRAME_LEN_SIZE) break;
 
+            // safe header read
             const frame_len = std.mem.readInt(u32, self.pending.items[pos..][0..4], .big);
+
+            // guard against insane or partial frame lengths
+            if (frame_len > (16 * 1024 * 1024)) return error.FrameTooLarge;
+            
             if (frame_len < 1 + pkt.TAG_SIZE) return error.FrameTooShort;
-            if (self.pending.items.len - pos < pkt.FRAME_LEN_SIZE + frame_len) break;
+            
 
             pos += pkt.FRAME_LEN_SIZE;
 
