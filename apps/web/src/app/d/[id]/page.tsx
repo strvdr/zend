@@ -34,6 +34,7 @@ function DownloadClient({ id }: { id: string }) {
   const [error, setError] = useState("");
   const [hasFragmentKey, setHasFragmentKey] = useState(false);
   const [progress, setProgress] = useState<StreamProgress | null>(null);
+  const [savedFilename, setSavedFilename] = useState("");
 
   useEffect(() => {
     setHasFragmentKey(Boolean(window.location.hash));
@@ -63,16 +64,12 @@ function DownloadClient({ id }: { id: string }) {
       return;
     }
 
-    console.log("[download-page] id", id);
-    console.log("[download-page] fragment key", keyB64);
-    console.log("[download-page] relay url", relayUrl);
-    console.log("[download-page] download url", downloadUrl);
-
     try {
       setError("");
       setIsComplete(false);
       setIsDownloading(true);
       setProgress(null);
+      setSavedFilename("");
 
       const response = await fetch(downloadUrl);
       if (!response.ok) {
@@ -92,24 +89,22 @@ function DownloadClient({ id }: { id: string }) {
         },
       );
 
-      console.log("[download-page] stream decrypt result", {
-        filename,
-        plaintextBytes: fileBytes.length,
-      });
-
+      const finalFilename = filename || `zend-${id}`;
       const objectUrl = window.URL.createObjectURL(new Blob([fileBytes]));
       const a = document.createElement("a");
       a.href = objectUrl;
-      a.download = filename || `zend-${id}`;
+      a.download = finalFilename;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(objectUrl);
 
+      setSavedFilename(finalFilename);
       setIsComplete(true);
     } catch (err) {
       console.error("[download-page] download error", err);
       setError(err instanceof Error ? err.message : "Download failed.");
+      setIsComplete(false);
     } finally {
       setIsDownloading(false);
     }
@@ -154,11 +149,11 @@ function DownloadClient({ id }: { id: string }) {
 
         {isDownloading && progress && (
           <div className="notice">
-            <div>
-              decrypted {formatBytes(progress.plaintextBytesProduced)}
-            </div>
+            <div>decrypted {formatBytes(progress.plaintextBytesProduced)}</div>
             <div className="result-meta">
-              <span>ciphertext read: {formatBytes(progress.ciphertextBytesProcessed)}</span>
+              <span>
+                ciphertext read: {formatBytes(progress.ciphertextBytesProcessed)}
+              </span>
               {progress.filename ? (
                 <>
                   <span className="separator">·</span>
@@ -175,7 +170,9 @@ function DownloadClient({ id }: { id: string }) {
           <div className="result">
             <div className="result-label">complete</div>
             <div className="result-meta">
-              <span>file saved to downloads</span>
+              <span>{savedFilename ? `saved as ${savedFilename}` : "file saved to downloads"}</span>
+              <span className="separator">·</span>
+              <span>integrity verified</span>
               <span className="separator">·</span>
               <span>relay copy consumed</span>
             </div>
@@ -184,6 +181,8 @@ function DownloadClient({ id }: { id: string }) {
 
         <footer className="footer">
           <span>decrypted client-side</span>
+          <span className="separator">·</span>
+          <span>integrity verified</span>
           <span className="separator">·</span>
           <span>relay sees ciphertext only</span>
           <span className="separator">·</span>

@@ -139,12 +139,76 @@ function readError(exports: WasmExports) {
   return new TextDecoder().decode(readBytes(exports.memory, ptr, len));
 }
 
-function assertStatus(exports: WasmExports, status: number) {
-  if (status === 0) return;
-  const err = readError(exports);
-  throw new Error(err || `WASM operation failed with status ${status}`);
+function normalizeWasmError(message: string) {
+  const trimmed = message.trim();
+
+  switch (trimmed) {
+    case "IntegrityHashMismatch":
+    case "IntegritySizeMismatch":
+      return "File verification failed. The file may be corrupted or incomplete.";
+
+    case "MissingIntegrity":
+    case "InvalidIntegrityPacket":
+    case "DuplicateIntegrityPacket":
+      return "This file could not be verified.";
+
+    case "AuthenticationFailed":
+      return "Decryption failed. The link may be invalid or the key may be wrong.";
+
+    case "IncompleteStream":
+    case "FrameTooShort":
+    case "FrameTooLarge":
+    case "InvalidTagSize":
+    case "InvalidMetadata":
+    case "InvalidChunk":
+    case "InvalidDonePacket":
+    case "UnknownPacketType":
+      return "The encrypted file is malformed or incomplete.";
+
+    case "ChunkBeforeMetadata":
+    case "DuplicateMetadata":
+    case "NoMetadata":
+      return "The encrypted file metadata is invalid.";
+
+    case "InvalidCompressionFlag":
+      return "The encrypted file uses an invalid compression format.";
+
+    case "SessionNotStarted":
+    case "SessionAlreadyFinished":
+      return "The decrypt session entered an invalid state.";
+
+    default:
+      return trimmed || "WASM operation failed.";
+  }
 }
 
+function readErrorCode(exports: WasmExports) {
+  try {
+    const ptr = exports.error_ptr() >>> 0;
+    const len = exports.error_len() >>> 0;
+
+    if (len === 0) return "";
+
+    return new TextDecoder().decode(readBytes(exports.memory, ptr, len));
+  } catch {
+    return "";
+  }
+}
+
+function assertStatus(exports: WasmExports, status: number) {
+  if (status === 0) return;
+
+  const raw = readErrorCode(exports);
+  const normalized = normalizeWasmError(raw);
+
+  console.error("[zend] wasm status error", {
+    status,
+    rawError: raw,
+    normalizedError: normalized,
+  });
+
+  throw new Error(normalized);
+}
 
 function allocAndWrite(exports: WasmExports, bytes: Uint8Array) {
   const ptr = exports.alloc_input(bytes.length);
@@ -182,8 +246,6 @@ function keyFromB64(keyB64: string) {
 }
 
 async function postBytes(url: string, bytes: Uint8Array) {
-  logDebug("post bytes", { url, bytes: bytes.length });
-
   const body = new Uint8Array(bytes);
 
   const response = await fetch(url, {
@@ -210,8 +272,6 @@ export async function encryptFile(file: File) {
   const filenameBytes = utf8(file.name);
   const key = crypto.getRandomValues(new Uint8Array(32));
 
-  logDebug("batch upload key b64", keyToB64(key));
-  logDebug("batch upload key hex", hex(key));
   logDebug("batch upload file", { name: file.name, size: file.size });
 
   const input = allocAndWrite(exports, fileBytes);
@@ -230,7 +290,6 @@ export async function encryptFile(file: File) {
     assertStatus(exports, status);
 
     const blob = takeResultBytes(exports);
-    logDebug("batch encrypted blob bytes", blob.length);
     exports.clear_result();
 
     return {
@@ -262,8 +321,6 @@ export async function uploadEncryptedFileChunked(
   const name = allocAndWrite(exports, filenameBytes);
   const keyBuf = allocAndWrite(exports, key);
 
-  logDebug("upload key b64", keyToB64(key));
-  logDebug("upload key hex", hex(key));
   logDebug("upload file", { name: file.name, size: file.size });
 
   let uploadId = "";
@@ -285,8 +342,6 @@ export async function uploadEncryptedFileChunked(
     uploadId = started.id;
     uploadToken = started.token;
 
-    logDebug("upload session started", { id: uploadId, token: uploadToken });
-
     onPhase?.("encrypting");
     onProgress?.({
       phase: "encrypting",
@@ -303,8 +358,6 @@ export async function uploadEncryptedFileChunked(
     );
     assertStatus(exports, beginStatus);
 
-    logDebug("begin_encrypt complete", true);
-
     let index = 0;
 
     const metadataFrame = takeResultBytes(exports);
@@ -315,7 +368,6 @@ export async function uploadEncryptedFileChunked(
     }
 
     totalCiphertextBytes += metadataFrame.length;
-    logDebug("metadata frame bytes", metadataFrame.length);
 
     onPhase?.("uploading");
     onProgress?.({
@@ -355,13 +407,7 @@ export async function uploadEncryptedFileChunked(
       }
 
       totalCiphertextBytes += frame.length;
-      logDebug("append chunk", {
-        index,
-        plaintextBytes: chunk.length,
-        ciphertextFrameBytes: frame.length,
-        totalCiphertextBytes,
-      });
-
+       
       await postBytes(
         `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
         frame,
@@ -389,8 +435,6 @@ export async function uploadEncryptedFileChunked(
     }
 
     totalCiphertextBytes += doneFrame.length;
-    logDebug("done frame bytes", doneFrame.length);
-    logDebug("total uploaded ciphertext bytes", totalCiphertextBytes);
 
     await postBytes(
       `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
@@ -416,13 +460,6 @@ export async function uploadEncryptedFileChunked(
 
     const finalJson = (await finishRes.json()) as { id: string; token: string };
 
-    logDebug("upload finished", {
-      id: finalJson.id,
-      token: finalJson.token,
-      keyB64: keyToB64(key),
-      totalCiphertextBytes,
-    });
-
     return {
       id: finalJson.id,
       token: finalJson.token,
@@ -446,8 +483,6 @@ export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
   const blobBytes = new Uint8Array(blob);
   const key = keyFromB64(keyB64);
 
-  logDebug("download key b64", keyB64);
-  logDebug("download key hex", hex(key));
   logDebug("download ciphertext bytes", blobBytes.length);
 
   const input = allocAndWrite(exports, blobBytes);
@@ -459,11 +494,6 @@ export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
 
     const fileBytes = takeResultBytes(exports);
     const filename = takeResultFilename(exports);
-
-    logDebug("decrypt success", {
-      filename,
-      plaintextBytes: fileBytes.length,
-    });
 
     exports.clear_result();
 
@@ -487,9 +517,6 @@ export async function decryptBlobStream(
 
   const key = keyFromB64(keyB64);
   const keyBuf = allocAndWrite(exports, key);
-
-  logDebug("stream download key b64", keyB64);
-  logDebug("stream download key hex", hex(key));
 
   try {
     const beginStatus = exports.begin_decrypt(keyBuf.ptr);
@@ -564,15 +591,6 @@ export async function decryptBlobStream(
 
       const doneNow = exports.decrypt_done() === 1;
 
-      logDebug("stream decrypt step", {
-        ciphertextChunkBytes: chunk.length,
-        totalCiphertextBytes,
-        plaintextProducedBytes: out.length,
-        totalPlaintextBytes,
-        filename,
-        done: doneNow,
-      });
-
       onProgress?.({
         ciphertextBytesProcessed: totalCiphertextBytes,
         plaintextBytesProduced: totalPlaintextBytes,
@@ -594,12 +612,6 @@ export async function decryptBlobStream(
       fileBytes.set(p, offset);
       offset += p.length;
     }
-
-    logDebug("stream decrypt success", {
-      filename,
-      plaintextBytes: fileBytes.length,
-      totalCiphertextBytes,
-    });
 
     onProgress?.({
       ciphertextBytesProcessed: totalCiphertextBytes,
