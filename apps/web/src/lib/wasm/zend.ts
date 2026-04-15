@@ -145,9 +145,11 @@ function keyFromB64(keyB64: string) {
 async function postBytes(url: string, bytes: Uint8Array) {
   logDebug("post bytes", { url, bytes: bytes.length });
 
+  const body = new Uint8Array(bytes);
+
   const response = await fetch(url, {
     method: "POST",
-    body: bytes,
+    body
   });
 
   if (!response.ok) {
