@@ -8,6 +8,12 @@ type UploadResponse = {
   token: string;
 };
 
+type UploadProgressState = {
+  fileBytesTotal: number;
+  fileBytesProcessed: number;
+  chunkIndex: number;
+};
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -25,6 +31,7 @@ export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [phase, setPhase] = useState<"idle" | "encrypting" | "uploading">("idle");
+  const [progress, setProgress] = useState<UploadProgressState | null>(null);
   const [error, setError] = useState("");
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [shareUrl, setShareUrl] = useState("");
@@ -43,6 +50,17 @@ export default function UploadPage() {
     return "idle";
   }, [error, result, isUploading, file, phase]);
 
+  const progressPercent = useMemo(() => {
+    if (!progress || progress.fileBytesTotal <= 0) return 0;
+    return Math.max(
+      0,
+      Math.min(
+        100,
+        Math.floor((progress.fileBytesProcessed / progress.fileBytesTotal) * 100),
+      ),
+    );
+  }, [progress]);
+
   async function handleUpload() {
     if (!relayUrl) {
       setError("NEXT_PUBLIC_RELAY_URL is missing.");
@@ -59,6 +77,7 @@ export default function UploadPage() {
       setResult(null);
       setShareUrl("");
       setCopied(false);
+      setProgress(null);
       setIsUploading(true);
       setPhase("encrypting");
 
@@ -66,6 +85,13 @@ export default function UploadPage() {
         relayUrl,
         file,
         (nextPhase) => setPhase(nextPhase),
+        (nextProgress) => {
+          setProgress({
+            fileBytesTotal: nextProgress.fileBytesTotal,
+            fileBytesProcessed: nextProgress.fileBytesProcessed,
+            chunkIndex: nextProgress.chunkIndex,
+          });
+        },
       );
 
       setResult({
@@ -97,6 +123,7 @@ export default function UploadPage() {
     setShareUrl("");
     setError("");
     setCopied(false);
+    setProgress(null);
     setPhase("idle");
   }
 
@@ -125,6 +152,7 @@ export default function UploadPage() {
               setShareUrl("");
               setError("");
               setCopied(false);
+              setProgress(null);
               setPhase("idle");
             }}
           />
@@ -164,6 +192,19 @@ export default function UploadPage() {
             </button>
           )}
         </div>
+
+        {isUploading && progress && (
+          <div className="notice">
+            <div>{progressPercent}%</div>
+            <div>
+              {formatBytes(progress.fileBytesProcessed)} /{" "}
+              {formatBytes(progress.fileBytesTotal)}
+            </div>
+            <div className="result-meta">
+              <span>chunk {progress.chunkIndex}</span>
+            </div>
+          </div>
+        )}
 
         {error && <div className="notice notice-error">{error}</div>}
 

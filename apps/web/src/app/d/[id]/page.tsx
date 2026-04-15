@@ -2,7 +2,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { decryptBlob } from "@/lib/wasm/zend";
+import { decryptBlobStream } from "@/lib/wasm/zend";
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+type StreamProgress = {
+  ciphertextBytesProcessed: number;
+  plaintextBytesProduced: number;
+  filename: string;
+  done: boolean;
+};
 
 export default function DownloadPage() {
   const params = useParams<{ id: string }>();
@@ -17,6 +33,7 @@ function DownloadClient({ id }: { id: string }) {
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState("");
   const [hasFragmentKey, setHasFragmentKey] = useState(false);
+  const [progress, setProgress] = useState<StreamProgress | null>(null);
 
   useEffect(() => {
     setHasFragmentKey(Boolean(window.location.hash));
@@ -55,6 +72,7 @@ function DownloadClient({ id }: { id: string }) {
       setError("");
       setIsComplete(false);
       setIsDownloading(true);
+      setProgress(null);
 
       const response = await fetch(downloadUrl);
       if (!response.ok) {
@@ -62,12 +80,19 @@ function DownloadClient({ id }: { id: string }) {
         throw new Error(text || `Download failed with ${response.status}`);
       }
 
-      const encryptedBlob = await response.arrayBuffer();
-      console.log("[download-page] ciphertext bytes", encryptedBlob.byteLength);
+      if (!response.body) {
+        throw new Error("ReadableStream not available on response.");
+      }
 
-      const { filename, fileBytes } = await decryptBlob(encryptedBlob, keyB64);
+      const { filename, fileBytes } = await decryptBlobStream(
+        response.body as ReadableStream<Uint8Array>,
+        keyB64,
+        (nextProgress) => {
+          setProgress(nextProgress);
+        },
+      );
 
-      console.log("[download-page] decrypt result", {
+      console.log("[download-page] stream decrypt result", {
         filename,
         plaintextBytes: fileBytes.length,
       });
@@ -127,6 +152,23 @@ function DownloadClient({ id }: { id: string }) {
           </button>
         </div>
 
+        {isDownloading && progress && (
+          <div className="notice">
+            <div>
+              decrypted {formatBytes(progress.plaintextBytesProduced)}
+            </div>
+            <div className="result-meta">
+              <span>ciphertext read: {formatBytes(progress.ciphertextBytesProcessed)}</span>
+              {progress.filename ? (
+                <>
+                  <span className="separator">·</span>
+                  <span>{progress.filename}</span>
+                </>
+              ) : null}
+            </div>
+          </div>
+        )}
+
         {error && <div className="notice notice-error">{error}</div>}
 
         {isComplete && (
@@ -145,7 +187,7 @@ function DownloadClient({ id }: { id: string }) {
           <span className="separator">·</span>
           <span>relay sees ciphertext only</span>
           <span className="separator">·</span>
-          <span>key never leaves your browser</span>
+          <span>streamed from relay</span>
         </footer>
       </div>
     </main>

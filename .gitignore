@@ -38,10 +38,6 @@ zig-out/
 *.o
 *.a
 
-# Optional: if you build named binaries
-relay
-main
-
 # =========================
 # OS junk
 # =========================

@@ -45,6 +45,20 @@ type WasmExports = {
   decrypt_done: () => number;
 };
 
+type UploadProgress = {
+  phase: "encrypting" | "uploading";
+  fileBytesTotal: number;
+  fileBytesProcessed: number;
+  chunkIndex: number;
+};
+
+type DownloadProgress = {
+  ciphertextBytesProcessed: number;
+  plaintextBytesProduced: number;
+  filename: string;
+  done: boolean;
+};
+
 function hex(bytes: Uint8Array) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -193,6 +207,7 @@ export async function uploadEncryptedFileChunked(
   relayUrl: string,
   file: File,
   onPhase?: (phase: "encrypting" | "uploading") => void,
+  onProgress?: (progress: UploadProgress) => void,
 ): Promise<{ id: string; token: string; keyB64: string }> {
   const wasm = await loadWasm();
   const exports = getExports(wasm);
@@ -213,6 +228,7 @@ export async function uploadEncryptedFileChunked(
   let uploadId = "";
   let uploadToken = "";
   let totalCiphertextBytes = 0;
+  let fileBytesProcessed = 0;
 
   try {
     const startRes = await fetch(`${relayUrl}/upload/start`, {
@@ -231,6 +247,12 @@ export async function uploadEncryptedFileChunked(
     logDebug("upload session started", { id: uploadId, token: uploadToken });
 
     onPhase?.("encrypting");
+    onProgress?.({
+      phase: "encrypting",
+      fileBytesTotal: file.size,
+      fileBytesProcessed: 0,
+      chunkIndex: 0,
+    });
 
     const beginStatus = exports.begin_encrypt(
       name.ptr,
@@ -255,6 +277,12 @@ export async function uploadEncryptedFileChunked(
     logDebug("metadata frame bytes", metadataFrame.length);
 
     onPhase?.("uploading");
+    onProgress?.({
+      phase: "uploading",
+      fileBytesTotal: file.size,
+      fileBytesProcessed: 0,
+      chunkIndex: index,
+    });
 
     await postBytes(
       `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
@@ -297,6 +325,15 @@ export async function uploadEncryptedFileChunked(
         `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
         frame,
       );
+
+      fileBytesProcessed += chunk.length;
+      onProgress?.({
+        phase: "uploading",
+        fileBytesTotal: file.size,
+        fileBytesProcessed,
+        chunkIndex: index,
+      });
+
       index += 1;
     }
 
@@ -318,6 +355,13 @@ export async function uploadEncryptedFileChunked(
       `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
       doneFrame,
     );
+
+    onProgress?.({
+      phase: "uploading",
+      fileBytesTotal: file.size,
+      fileBytesProcessed: file.size,
+      chunkIndex: index,
+    });
 
     const finishRes = await fetch(
       `${relayUrl}/upload/finish/${uploadId}?token=${encodeURIComponent(uploadToken)}`,
@@ -392,6 +436,7 @@ export async function decryptBlob(blob: ArrayBuffer, keyB64: string) {
 export async function decryptBlobStream(
   blob: ReadableStream<Uint8Array>,
   keyB64: string,
+  onProgress?: (progress: DownloadProgress) => void,
 ) {
   const wasm = await loadWasm();
   const exports = getExports(wasm);
@@ -415,6 +460,7 @@ export async function decryptBlobStream(
   let filename = "";
   const parts: Uint8Array[] = [];
   let totalCiphertextBytes = 0;
+  let totalPlaintextBytes = 0;
 
   try {
     const reader = blob.getReader();
@@ -438,23 +484,34 @@ export async function decryptBlobStream(
       const out = takeResultBytes(exports);
       if (out.length > 0) {
         parts.push(out);
+        totalPlaintextBytes += out.length;
       }
 
       if (!filename && exports.result_filename_len() > 0) {
         filename = takeResultFilename(exports);
       }
 
+      const doneNow = exports.decrypt_done() === 1;
+
       logDebug("stream decrypt step", {
         ciphertextChunkBytes: chunk.length,
         totalCiphertextBytes,
         plaintextProducedBytes: out.length,
+        totalPlaintextBytes,
         filename,
-        done: exports.decrypt_done() === 1,
+        done: doneNow,
+      });
+
+      onProgress?.({
+        ciphertextBytesProcessed: totalCiphertextBytes,
+        plaintextBytesProduced: totalPlaintextBytes,
+        filename,
+        done: doneNow,
       });
 
       exports.clear_result();
 
-      if (exports.decrypt_done() === 1) break;
+      if (doneNow) break;
     }
 
     let total = 0;
@@ -471,6 +528,13 @@ export async function decryptBlobStream(
       filename,
       plaintextBytes: fileBytes.length,
       totalCiphertextBytes,
+    });
+
+    onProgress?.({
+      ciphertextBytesProcessed: totalCiphertextBytes,
+      plaintextBytesProduced: fileBytes.length,
+      filename,
+      done: true,
     });
 
     return { filename, fileBytes };
