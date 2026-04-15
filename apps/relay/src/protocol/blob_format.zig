@@ -220,16 +220,13 @@ pub const DecryptSession = struct {
         var pos: usize = 0;
 
         while (true) {
-            if (self.pending.items.len - pos < pkt.FRAME_LEN_SIZE) break;
+            const remaining = self.pending.items.len - pos;
+            if (remaining < pkt.FRAME_LEN_SIZE) break;
 
-            // safe header read
-            const frame_len = std.mem.readInt(u32, self.pending.items[pos..][0..4], .big);
-
-            // guard against insane or partial frame lengths
+            const frame_len = std.mem.readInt(u32, self.pending.items[pos..][0..pkt.FRAME_LEN_SIZE], .big);
             if (frame_len > (16 * 1024 * 1024)) return error.FrameTooLarge;
-            
             if (frame_len < 1 + pkt.TAG_SIZE) return error.FrameTooShort;
-            
+            if (remaining < pkt.FRAME_LEN_SIZE + frame_len) break;
 
             pos += pkt.FRAME_LEN_SIZE;
 
@@ -237,6 +234,9 @@ pub const DecryptSession = struct {
             pos += 1;
 
             const ciphertext_len = frame_len - 1 - pkt.TAG_SIZE;
+            const frame_remaining = self.pending.items.len - pos;
+            if (frame_remaining < ciphertext_len + pkt.TAG_SIZE) return error.IncompleteStream;
+
             var packet_plaintext = try self.allocator.alloc(u8, ciphertext_len);
             defer self.allocator.free(packet_plaintext);
 
@@ -259,6 +259,7 @@ pub const DecryptSession = struct {
                     if (packet_plaintext.len < 2 + fn_len + 8) return error.InvalidMetadata;
                     if (self.saw_metadata) return error.DuplicateMetadata;
 
+                    if (self.filename) |f| self.allocator.free(f);
                     self.filename = try self.allocator.dupe(u8, packet_plaintext[2 .. 2 + fn_len]);
                     self.saw_metadata = true;
 
