@@ -4,10 +4,12 @@ export default function HomePage() {
   return (
     <main className="page-shell">
       <div className="page-wrap home-wrap">
+        {/* Header */}
         <header className="header">
           <span className="header-path">zend</span>
         </header>
 
+        {/* Hero */}
         <section className="home-hero">
           <p className="home-tagline">encrypted file transfer</p>
           <p className="home-desc">
@@ -30,6 +32,7 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* How it works */}
         <section className="home-section">
           <div className="home-section-label">how it works</div>
           <div className="home-steps">
@@ -66,11 +69,12 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* CLI */}
         <section className="home-section">
           <div className="home-section-label">cli</div>
           <div className="home-code">
             <div className="home-code-line">
-              <span className="home-code-prompt">$</span>zend ./report.pdf
+              <span className="home-code-prompt">$</span> zend ./report.pdf
             </div>
             <div className="home-code-output">
               encrypting... done.
@@ -80,7 +84,7 @@ export default function HomePage() {
             </div>
             <div className="home-code-comment"># recipient</div>
             <div className="home-code-line">
-              <span className="home-code-prompt">$</span>zend
+              <span className="home-code-prompt">$</span> zend
               https://zend.dev/d/a7f3x#k=sQ9...mXw
             </div>
             <div className="home-code-output">
@@ -89,6 +93,7 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* Properties */}
         <section className="home-section">
           <div className="home-section-label">properties</div>
           <div className="home-props">
@@ -117,6 +122,7 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* Footer */}
         <footer className="footer">
           <span>open source</span>
           <span className="separator">·</span>

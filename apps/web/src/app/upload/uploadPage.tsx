@@ -203,7 +203,7 @@ export default function UploadPage() {
         </label>
 
         <div className="notice">
-          max file size: {formatBytes(MAX_FILE_BYTES)}
+          <div>max file size: {formatBytes(MAX_FILE_BYTES)}</div>
         </div>
 
         <div className="actions">
@@ -211,7 +211,6 @@ export default function UploadPage() {
             className="button button-primary"
             onClick={handleUpload}
             disabled={!file || isUploading}
-            style={{ flex: 1 }}
           >
             {phase === "encrypting"
               ? "encrypting…"
@@ -280,7 +279,7 @@ export default function UploadPage() {
           <span className="separator">·</span>
           <span>relay sees ciphertext only</span>
           <span className="separator">·</span>
-          <span>chunked upload</span>
+          <span>chunked upload path</span>
         </footer>
       </div>
     </main>

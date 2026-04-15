@@ -187,12 +187,14 @@ pub fn handleAppend(
     };
     defer state.deinit(allocator);
 
-    std.log.info("upload append begin id={s} index={d} expected_index={d} bytes_written_before={d} content_length={any}", .{
+    std.log.info("upload append begin id={s} index={d} expected_index={d} bytes_written_before={d} content_length={any} max_append_body_bytes={d} max_upload_bytes={d}", .{
         id,
         index,
         state.next_index,
         state.bytes_written,
         req.head.content_length,
+        cfg.max_append_body_bytes,
+        cfg.max_upload_bytes,
     });
 
     if (!std.mem.eql(u8, state.token, token)) {
@@ -211,12 +213,14 @@ pub fn handleAppend(
         return;
     }
 
-    const remaining_limit: u64 = if (state.bytes_written >= cfg.max_upload_bytes)
+    const remaining_upload_bytes: u64 = if (state.bytes_written >= cfg.max_upload_bytes)
         0
     else
         cfg.max_upload_bytes - state.bytes_written;
 
-    const body = http_helpers.readBody(req, allocator, remaining_limit) catch |err| {
+    const body_limit: usize = @intCast(@min(remaining_upload_bytes, cfg.max_append_body_bytes));
+
+    const body = http_helpers.readBody(req, allocator, body_limit) catch |err| {
         std.log.err("upload append readBody failed id={s} index={d}: {s}", .{
             id,
             index,
@@ -225,7 +229,7 @@ pub fn handleAppend(
 
         if (err == error.BodyTooLarge) {
             storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-            http_helpers.respondText(req, .payload_too_large, "Payload too large");
+            http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
             return;
         }
 
@@ -248,7 +252,7 @@ pub fn handleAppend(
             cfg.max_upload_bytes,
         });
         storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-        http_helpers.respondText(req, .payload_too_large, "Payload too large");
+        http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
         return;
     }
 
@@ -287,7 +291,7 @@ pub fn handleAppend(
             cfg.max_upload_bytes,
         });
         storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-        http_helpers.respondText(req, .payload_too_large, "Payload too large");
+        http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
         return;
     }
 
@@ -364,6 +368,18 @@ pub fn handleFinish(
         state.next_index,
         state.bytes_written,
     });
+
+    if (tmp_size > cfg.max_upload_bytes or state.bytes_written > cfg.max_upload_bytes) {
+        std.log.err("upload finish size limit exceeded id={s} tmp_size={d} bytes_written={d} limit={d}", .{
+            id,
+            tmp_size,
+            state.bytes_written,
+            cfg.max_upload_bytes,
+        });
+        storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
+        http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
+        return;
+    }
 
     try std.fs.cwd().rename(tmp_blob_path, blob_path);
     errdefer std.fs.cwd().deleteFile(blob_path) catch {};

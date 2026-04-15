@@ -142,7 +142,7 @@ function DownloadClient({ id }: { id: string }) {
             {isComplete
               ? "download complete"
               : isDownloading
-                ? "decrypting…"
+                ? "decrypting..."
                 : "download & decrypt"}
           </button>
         </div>
@@ -185,6 +185,8 @@ function DownloadClient({ id }: { id: string }) {
           <span>integrity verified</span>
           <span className="separator">·</span>
           <span>relay sees ciphertext only</span>
+          <span className="separator">·</span>
+          <span>streamed from relay</span>
         </footer>
       </div>
     </main>
