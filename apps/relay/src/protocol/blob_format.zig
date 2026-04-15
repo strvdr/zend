@@ -3,9 +3,13 @@ const aead = @import("aead");
 const huffman = @import("huffman");
 const pkt = @import("packet_types.zig");
 
+const Sha256 = std.crypto.hash.sha2.Sha256;
+const INTEGRITY_PACKET_SIZE: usize = 8 + 32; // plaintext_size(u64 LE) + sha256
+
 pub const DecryptedFile = struct {
     filename: []u8,
     bytes: []u8,
+    verified: bool,
 
     pub fn deinit(self: *DecryptedFile, allocator: std.mem.Allocator) void {
         allocator.free(self.filename);
@@ -26,22 +30,25 @@ fn encryptAndAppend(
     connection_id: [4]u8,
     counter: *u64,
     packet_type: u8,
-    plaintext: []u8,
+    plaintext: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
     const nonce = makeNonce(connection_id, counter.*);
 
-    var tag: [pkt.TAG_SIZE]u8 = undefined;
-    try aead.encrypt(key, nonce, plaintext, &[_]u8{}, &tag, allocator);
+    const ciphertext = try allocator.dupe(u8, plaintext);
+    defer allocator.free(ciphertext);
 
-    const frame_len: u32 = @intCast(1 + plaintext.len + pkt.TAG_SIZE);
+    var tag: [pkt.TAG_SIZE]u8 = undefined;
+    try aead.encrypt(key, nonce, ciphertext, &[_]u8{}, &tag, allocator);
+
+    const frame_len: u32 = @intCast(1 + ciphertext.len + pkt.TAG_SIZE);
 
     var len_buf: [pkt.FRAME_LEN_SIZE]u8 = undefined;
     std.mem.writeInt(u32, &len_buf, frame_len, .big);
 
     try buf.appendSlice(allocator, &len_buf);
     try buf.append(allocator, packet_type);
-    try buf.appendSlice(allocator, plaintext);
+    try buf.appendSlice(allocator, ciphertext);
     try buf.appendSlice(allocator, &tag);
 
     counter.* += 1;
@@ -57,6 +64,7 @@ pub const EncryptSession = struct {
     started: bool,
     finished: bool,
     result: std.ArrayList(u8),
+    plaintext_hasher: Sha256,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -74,6 +82,7 @@ pub const EncryptSession = struct {
             .started = false,
             .finished = false,
             .result = .{},
+            .plaintext_hasher = Sha256.init(.{}),
         };
 
         try self.emitMetadata(filename);
@@ -115,6 +124,7 @@ pub const EncryptSession = struct {
         if (self.finished) return error.SessionAlreadyFinished;
 
         self.clearResult();
+        self.plaintext_hasher.update(plaintext_chunk);
 
         const compressed = huffman.encode(plaintext_chunk, self.allocator) catch null;
         defer if (compressed) |c| self.allocator.free(c);
@@ -148,6 +158,24 @@ pub const EncryptSession = struct {
         if (self.finished) return error.SessionAlreadyFinished;
 
         self.clearResult();
+
+        var digest: [32]u8 = undefined;
+        var hasher = self.plaintext_hasher;
+        hasher.final(&digest);
+
+        var integrity_buf: [INTEGRITY_PACKET_SIZE]u8 = undefined;
+        std.mem.writeInt(u64, integrity_buf[0..8], self.total_plaintext_size, .little);
+        @memcpy(integrity_buf[8..], &digest);
+
+        try encryptAndAppend(
+            &self.result,
+            self.key,
+            self.connection_id,
+            &self.counter,
+            pkt.INTEGRITY,
+            &integrity_buf,
+            self.allocator,
+        );
 
         var done_buf: [4]u8 = undefined;
         std.mem.writeInt(u32, &done_buf, self.chunk_index, .little);
@@ -184,7 +212,12 @@ pub const DecryptSession = struct {
     filename: ?[]u8,
     saw_metadata: bool,
     saw_done: bool,
+    saw_integrity: bool,
     expected_chunks: ?u32,
+    expected_plaintext_size: ?u64,
+    expected_sha256: ?[32]u8,
+    plaintext_hasher: Sha256,
+    total_plaintext_bytes: u64,
 
     pub fn init(allocator: std.mem.Allocator, key: [32]u8) DecryptSession {
         return .{
@@ -197,7 +230,12 @@ pub const DecryptSession = struct {
             .filename = null,
             .saw_metadata = false,
             .saw_done = false,
+            .saw_integrity = false,
             .expected_chunks = null,
+            .expected_plaintext_size = null,
+            .expected_sha256 = null,
+            .plaintext_hasher = Sha256.init(.{}),
+            .total_plaintext_bytes = 0,
         };
     }
 
@@ -224,8 +262,11 @@ pub const DecryptSession = struct {
             const available = self.pending.items.len - pos;
             if (available < pkt.FRAME_LEN_SIZE) break;
 
-            const frame_header = self.pending.items[pos .. pos + pkt.FRAME_LEN_SIZE];
-            const frame_len_u32 = std.mem.readInt(u32, frame_header, .big);
+            const frame_len_u32 = std.mem.readInt(
+                u32,
+                self.pending.items[pos .. pos + pkt.FRAME_LEN_SIZE][0..pkt.FRAME_LEN_SIZE],
+                .big,
+            );
             const frame_len: usize = @intCast(frame_len_u32);
 
             if (frame_len > max_frame_len) return error.FrameTooLarge;
@@ -269,9 +310,9 @@ pub const DecryptSession = struct {
                     self.filename = try self.allocator.dupe(u8, packet_plaintext[2 .. 2 + fn_len]);
                     self.saw_metadata = true;
 
-                    _ = std.mem.readInt(
+                    self.expected_plaintext_size = std.mem.readInt(
                         u64,
-                        packet_plaintext[2 + fn_len .. 2 + fn_len + 8],
+                        packet_plaintext[2 + fn_len ..][0..8],
                         .little,
                     );
                 },
@@ -284,19 +325,53 @@ pub const DecryptSession = struct {
                     const chunk_payload = packet_plaintext[pkt.CHUNK_HEADER_SIZE..];
 
                     switch (flag) {
-                        0x00 => try self.output.appendSlice(self.allocator, chunk_payload),
+                        0x00 => {
+                            try self.output.appendSlice(self.allocator, chunk_payload);
+                            self.plaintext_hasher.update(chunk_payload);
+                            self.total_plaintext_bytes += chunk_payload.len;
+                        },
                         0x01 => {
                             const decompressed = try huffman.decode(chunk_payload, self.allocator);
                             defer self.allocator.free(decompressed);
                             try self.output.appendSlice(self.allocator, decompressed);
+                            self.plaintext_hasher.update(decompressed);
+                            self.total_plaintext_bytes += decompressed.len;
                         },
                         else => return error.InvalidCompressionFlag,
                     }
                 },
 
+                pkt.INTEGRITY => {
+                    if (packet_plaintext.len != INTEGRITY_PACKET_SIZE) return error.InvalidIntegrityPacket;
+                    if (self.saw_integrity) return error.DuplicateIntegrityPacket;
+
+                    self.expected_plaintext_size = std.mem.readInt(u64, packet_plaintext[0..8], .little);
+
+                    var digest: [32]u8 = undefined;
+                    @memcpy(&digest, packet_plaintext[8..40]);
+                    self.expected_sha256 = digest;
+                    self.saw_integrity = true;
+                },
+
                 pkt.DONE => {
                     if (packet_plaintext.len != 4) return error.InvalidDonePacket;
                     self.expected_chunks = std.mem.readInt(u32, packet_plaintext[0..4], .little);
+
+                    if (!self.saw_integrity) return error.MissingIntegrity;
+
+                    const expected_size = self.expected_plaintext_size orelse return error.MissingIntegrity;
+                    const expected_hash = self.expected_sha256 orelse return error.MissingIntegrity;
+
+                    if (self.total_plaintext_bytes != expected_size) return error.IntegritySizeMismatch;
+
+                    var actual_hash: [32]u8 = undefined;
+                    var hasher = self.plaintext_hasher;
+                    hasher.final(&actual_hash);
+
+                    if (!std.mem.eql(u8, &actual_hash, &expected_hash)) {
+                        return error.IntegrityHashMismatch;
+                    }
+
                     self.saw_done = true;
                     pos = frame_end;
                     break;
@@ -393,5 +468,6 @@ pub fn decryptFileBuffer(
     return .{
         .filename = try allocator.dupe(u8, filename),
         .bytes = try out.toOwnedSlice(allocator),
+        .verified = true,
     };
 }

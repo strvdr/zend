@@ -176,7 +176,7 @@ pub fn decode(compressed: []const u8, allocator: std.mem.Allocator) ![]u8 {
 
     for (0..256) |i| {
         const offset = i * 4;
-        freq[i] = std.mem.readInt(u32, compressed[offset .. offset + 4], .little);
+        freq[i] = std.mem.readInt(u32, compressed[offset ..][0..4], .little);
         total_freq += freq[i];
     }
 
