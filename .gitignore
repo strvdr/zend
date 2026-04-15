@@ -30,6 +30,7 @@ pnpm-debug.log*
 # Zig
 # =========================
 zig-cache/
+.zig-cache/
 zig-out/
 
 # Compiled binaries (if you output locally)
