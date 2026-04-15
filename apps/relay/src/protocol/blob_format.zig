@@ -217,34 +217,39 @@ pub const DecryptSession = struct {
         self.clearOutput();
         try self.pending.appendSlice(self.allocator, bytes);
 
+        const max_frame_len: usize = 16 * 1024 * 1024;
         var pos: usize = 0;
 
         while (true) {
-            const remaining = self.pending.items.len - pos;
-            if (remaining < pkt.FRAME_LEN_SIZE) break;
+            const available = self.pending.items.len - pos;
+            if (available < pkt.FRAME_LEN_SIZE) break;
 
-            const frame_len = std.mem.readInt(u32, self.pending.items[pos..][0..pkt.FRAME_LEN_SIZE], .big);
-            if (frame_len > (16 * 1024 * 1024)) return error.FrameTooLarge;
+            const frame_header = self.pending.items[pos .. pos + pkt.FRAME_LEN_SIZE];
+            const frame_len_u32 = std.mem.readInt(u32, frame_header, .big);
+            const frame_len: usize = @intCast(frame_len_u32);
+
+            if (frame_len > max_frame_len) return error.FrameTooLarge;
             if (frame_len < 1 + pkt.TAG_SIZE) return error.FrameTooShort;
-            if (remaining < pkt.FRAME_LEN_SIZE + frame_len) break;
 
-            pos += pkt.FRAME_LEN_SIZE;
+            const total_frame_bytes = pkt.FRAME_LEN_SIZE + frame_len;
+            if (available < total_frame_bytes) break;
 
-            const packet_type = self.pending.items[pos];
-            pos += 1;
+            const frame_start = pos + pkt.FRAME_LEN_SIZE;
+            const frame_end = pos + total_frame_bytes;
+            const frame = self.pending.items[frame_start..frame_end];
 
+            const packet_type = frame[0];
             const ciphertext_len = frame_len - 1 - pkt.TAG_SIZE;
-            const frame_remaining = self.pending.items.len - pos;
-            if (frame_remaining < ciphertext_len + pkt.TAG_SIZE) return error.IncompleteStream;
+            const ciphertext = frame[1 .. 1 + ciphertext_len];
+            const tag_bytes = frame[1 + ciphertext_len .. frame.len];
+            if (tag_bytes.len != pkt.TAG_SIZE) return error.InvalidTagSize;
 
-            var packet_plaintext = try self.allocator.alloc(u8, ciphertext_len);
+            var packet_plaintext = try self.allocator.alloc(u8, ciphertext.len);
             defer self.allocator.free(packet_plaintext);
+            @memcpy(packet_plaintext, ciphertext);
 
-            @memcpy(packet_plaintext, self.pending.items[pos .. pos + ciphertext_len]);
-            pos += ciphertext_len;
-
-            const tag: [pkt.TAG_SIZE]u8 = self.pending.items[pos..][0..pkt.TAG_SIZE].*;
-            pos += pkt.TAG_SIZE;
+            var tag: [pkt.TAG_SIZE]u8 = undefined;
+            @memcpy(&tag, tag_bytes);
 
             const nonce = makeNonce(self.connection_id, self.counter);
             self.counter += 1;
@@ -256,7 +261,8 @@ pub const DecryptSession = struct {
                     if (packet_plaintext.len < 2 + 8) return error.InvalidMetadata;
 
                     const fn_len = std.mem.readInt(u16, packet_plaintext[0..2], .little);
-                    if (packet_plaintext.len < 2 + fn_len + 8) return error.InvalidMetadata;
+                    const metadata_len: usize = 2 + @as(usize, fn_len) + 8;
+                    if (packet_plaintext.len < metadata_len) return error.InvalidMetadata;
                     if (self.saw_metadata) return error.DuplicateMetadata;
 
                     if (self.filename) |f| self.allocator.free(f);
@@ -265,7 +271,7 @@ pub const DecryptSession = struct {
 
                     _ = std.mem.readInt(
                         u64,
-                        packet_plaintext[2 + fn_len ..][0..8],
+                        packet_plaintext[2 + fn_len .. 2 + fn_len + 8],
                         .little,
                     );
                 },
@@ -292,11 +298,14 @@ pub const DecryptSession = struct {
                     if (packet_plaintext.len != 4) return error.InvalidDonePacket;
                     self.expected_chunks = std.mem.readInt(u32, packet_plaintext[0..4], .little);
                     self.saw_done = true;
+                    pos = frame_end;
                     break;
                 },
 
                 else => return error.UnknownPacketType,
             }
+
+            pos = frame_end;
         }
 
         if (pos > 0) {
