@@ -19,14 +19,6 @@ export default function HomePage() {
             <Link href="/upload" className="button button-primary">
               upload a file
             </Link>
-            <a
-              href="https://github.com/your-org/zend"
-              className="button button-ghost"
-              target="_blank"
-              rel="noreferrer"
-            >
-              source
-            </a>
           </div>
         </section>
 
