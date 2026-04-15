@@ -108,6 +108,24 @@ fn generateCodes(nodes: []const HuffmanNode, nodeIndex: usize, currentCode: [256
 }
 
 pub fn encode(data: []const u8, allocator: std.mem.Allocator) ![]u8 { 
+    if (data.len == 0) {
+        var output = std.ArrayList(u8){};
+        defer output.deinit(allocator);
+
+        const zero_freq = [_]u32{0} ** 256;
+        for (zero_freq) |f| {
+            var buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &buf, f, .little);
+            try output.appendSlice(allocator, &buf);
+        }
+
+        var len_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &len_buf, 0, .little);
+        try output.appendSlice(allocator, &len_buf);
+
+        return output.toOwnedSlice(allocator);
+    }
+
     const freq = buildFrequencyTable(data);
 
     var tree = try buildTree(freq, allocator);
@@ -147,39 +165,69 @@ pub fn encode(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn decode(compressed: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    var freq: [256]u32 = undefined;
-    for(0..256) |i| {
-        const offset = i * 4;
-        freq[i] = std.mem.readInt(u32, compressed[offset..][0..4], .little);
+    const header_len: usize = 256 * 4 + 4; // freq table + original length
+
+    if (compressed.len < header_len) {
+        return error.TruncatedHuffmanHeader;
     }
 
-    const dataLen = std.mem.readInt(u32, compressed[1024..][0..4], .little);
+    var freq: [256]u32 = undefined;
+    var total_freq: u64 = 0;
+
+    for (0..256) |i| {
+        const offset = i * 4;
+        freq[i] = std.mem.readInt(u32, compressed[offset .. offset + 4], .little);
+        total_freq += freq[i];
+    }
+
+    const data_len_u32 = std.mem.readInt(u32, compressed[1024 .. 1028], .little);
+    const data_len: usize = @intCast(data_len_u32);
+
+    if (data_len == 0) {
+        return allocator.alloc(u8, 0);
+    }
 
     var tree = try buildTree(freq, allocator);
     defer tree.nodes.deinit(allocator);
 
-    const bitData = compressed[1028..];
-    var output = try allocator.alloc(u8, dataLen);
-    var bytesDecoded: usize = 0;
-    var bitIndex: usize = 0;
-    var nodeIndex = tree.root;
+    if (tree.nodes.items.len == 0) {
+        return error.InvalidHuffmanTree;
+    }
 
-    while(bytesDecoded < dataLen) {
-        const bytePos = bitIndex / 8;
-        const bitPos: u3 = @intCast(7 - (bitIndex % 8));
-        const bit = (bitData[bytePos] >> bitPos) & 1;
-        bitIndex += 1;
+    const bit_data = compressed[1028..];
+    var output = try allocator.alloc(u8, data_len);
+    errdefer allocator.free(output);
 
-        if(bit == 0) {
-            nodeIndex = tree.nodes.items[nodeIndex].left.?;
-        } else {
-            nodeIndex = tree.nodes.items[nodeIndex].right.?;
+    // Special case: only one symbol in the tree.
+    if (tree.nodes.items[tree.root].byteVal) |byte| {
+        @memset(output, byte);
+        return output;
+    }
+
+    var bytes_decoded: usize = 0;
+    var bit_index: usize = 0;
+    var node_index = tree.root;
+
+    while (bytes_decoded < data_len) {
+        const byte_pos = bit_index / 8;
+        if (byte_pos >= bit_data.len) {
+            return error.TruncatedHuffmanBitstream;
         }
 
-        if(tree.nodes.items[nodeIndex].byteVal) |byte| {
-            output[bytesDecoded] = byte;
-            bytesDecoded += 1;
-            nodeIndex = tree.root;
+        const bit_pos: u3 = @intCast(7 - (bit_index % 8));
+        const bit = (bit_data[byte_pos] >> bit_pos) & 1;
+        bit_index += 1;
+
+        const node = tree.nodes.items[node_index];
+        node_index = if (bit == 0)
+            node.left orelse return error.InvalidHuffmanTree
+        else
+            node.right orelse return error.InvalidHuffmanTree;
+
+        if (tree.nodes.items[node_index].byteVal) |byte| {
+            output[bytes_decoded] = byte;
+            bytes_decoded += 1;
+            node_index = tree.root;
         }
     }
 

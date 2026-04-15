@@ -76,7 +76,57 @@ function writeBytes(memory: WebAssembly.Memory, ptr: number, data: Uint8Array) {
 }
 
 function readBytes(memory: WebAssembly.Memory, ptr: number, len: number) {
-  return new Uint8Array(memory.buffer, ptr, len).slice();
+  const byteOffset = ptr >>> 0;
+  const byteLength = len >>> 0;
+  const memSize = memory.buffer.byteLength >>> 0;
+
+  if (byteOffset > memSize || byteLength > memSize - byteOffset) {
+    const message =
+      `WASM returned invalid slice: ptr=${byteOffset} len=${byteLength} memory=${memSize}`;
+
+    console.error("[zend] readBytes invalid slice", {
+      ptr: byteOffset,
+      len: byteLength,
+      memoryBytes: memSize,
+      memory,
+    });
+
+    throw new Error(message);
+  }
+
+  // Copy immediately into JS-owned memory so later WASM memory growth or
+  // mutation cannot invalidate the returned bytes.
+  return new Uint8Array(memory.buffer.slice(byteOffset, byteOffset + byteLength));
+}
+
+function takeResultBytes(exports: WasmExports) {
+  const ptr = exports.result_ptr() >>> 0;
+  const len = exports.result_len() >>> 0;
+
+  console.log("[zend] takeResultBytes", {
+    ptr,
+    len,
+    memoryBytes: exports.memory.buffer.byteLength >>> 0,
+  });
+
+  if (len === 0) return new Uint8Array(0);
+
+  return readBytes(exports.memory, ptr, len);
+}
+
+function takeResultFilename(exports: WasmExports) {
+  const ptr = exports.result_filename_ptr() >>> 0;
+  const len = exports.result_filename_len() >>> 0;
+
+  console.log("[zend] takeResultFilename", {
+    ptr,
+    len,
+    memoryBytes: exports.memory.buffer.byteLength >>> 0,
+  });
+
+  if (len === 0) return "";
+
+  return new TextDecoder().decode(readBytes(exports.memory, ptr, len));
 }
 
 function utf8(input: string) {
@@ -95,17 +145,6 @@ function assertStatus(exports: WasmExports, status: number) {
   throw new Error(err || `WASM operation failed with status ${status}`);
 }
 
-function takeResultBytes(exports: WasmExports) {
-  const ptr = exports.result_ptr();
-  const len = exports.result_len();
-  return readBytes(exports.memory, ptr, len);
-}
-
-function takeResultFilename(exports: WasmExports) {
-  const ptr = exports.result_filename_ptr();
-  const len = exports.result_filename_len();
-  return new TextDecoder().decode(readBytes(exports.memory, ptr, len));
-}
 
 function allocAndWrite(exports: WasmExports, bytes: Uint8Array) {
   const ptr = exports.alloc_input(bytes.length);
@@ -483,14 +522,44 @@ export async function decryptBlobStream(
         input.free();
       }
 
-      const out = takeResultBytes(exports);
+      let out: Uint8Array;
+      try {
+        out = takeResultBytes(exports);
+      } catch (err) {
+        console.error("[zend] invalid wasm result slice after push_blob_bytes", {
+          resultPtr: exports.result_ptr(),
+          resultLen: exports.result_len(),
+          filenamePtr: exports.result_filename_ptr(),
+          filenameLen: exports.result_filename_len(),
+          memoryBytes: exports.memory.buffer.byteLength >>> 0,
+          ciphertextChunkBytes: chunk.length,
+          totalCiphertextBytes,
+          err,
+        });
+        throw err;
+      }
+
       if (out.length > 0) {
         parts.push(out);
         totalPlaintextBytes += out.length;
       }
 
       if (!filename && exports.result_filename_len() > 0) {
+        try {
         filename = takeResultFilename(exports);
+        } catch (err) {
+        console.error("[zend] invalid wasm filename slice after push_blob_bytes", {
+          resultPtr: exports.result_ptr(),
+          resultLen: exports.result_len(),
+          filenamePtr: exports.result_filename_ptr(),
+          filenameLen: exports.result_filename_len(),
+          memoryBytes: exports.memory.buffer.byteLength >>> 0,
+          ciphertextChunkBytes: chunk.length,
+          totalCiphertextBytes,
+          err,
+        });
+        throw err;
+        }
       }
 
       const doneNow = exports.decrypt_done() === 1;
