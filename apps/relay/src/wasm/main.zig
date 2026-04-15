@@ -7,8 +7,68 @@ var result_bytes: []u8 = &[_]u8{};
 var result_filename: []u8 = &[_]u8{};
 var error_bytes: []u8 = &[_]u8{};
 
+const WasmDecryptSession = struct {
+    allocator: std.mem.Allocator,
+    key: [32]u8,
+    pending: std.ArrayList(u8),
+    output: []u8,
+    filename: ?[]u8,
+    done: bool,
+
+    fn init(alloc: std.mem.Allocator, key: [32]u8) WasmDecryptSession {
+        return .{
+            .allocator = alloc,
+            .key = key,
+            .pending = .{},
+            .output = &[_]u8{},
+            .filename = null,
+            .done = false,
+        };
+    }
+
+    fn deinit(self: *WasmDecryptSession) void {
+        self.pending.deinit(self.allocator);
+        if (self.output.len > 0) self.allocator.free(self.output);
+        if (self.filename) |name| self.allocator.free(name);
+        self.output = &[_]u8{};
+        self.filename = null;
+        self.done = false;
+    }
+
+    fn pushBytes(self: *WasmDecryptSession, input: []const u8) !void {
+        if (self.done) return error.SessionAlreadyFinished;
+
+        try self.pending.appendSlice(self.allocator, input);
+
+        var out = blob_format.decryptFileBuffer(self.allocator, self.pending.items, self.key) catch |err| switch (err) {
+            error.IncompleteStream => return,
+            else => return err,
+        };
+        defer out.deinit(self.allocator);
+
+        if (self.output.len > 0) self.allocator.free(self.output);
+        self.output = try self.allocator.dupe(u8, out.bytes);
+
+        if (self.filename) |name| self.allocator.free(name);
+        self.filename = try self.allocator.dupe(u8, out.filename);
+        self.done = true;
+    }
+
+    fn outputSlice(self: *const WasmDecryptSession) []const u8 {
+        return self.output;
+    }
+
+    fn filenameSlice(self: *const WasmDecryptSession) ?[]const u8 {
+        return self.filename;
+    }
+
+    fn isDone(self: *const WasmDecryptSession) bool {
+        return self.done;
+    }
+};
 var encrypt_session: ?blob_format.EncryptSession = null;
-var decrypt_session: ?blob_format.DecryptSession = null;
+var decrypt_session: ?WasmDecryptSession = null;
+
 
 fn setError(msg: []const u8) void {
     if (error_bytes.len > 0) allocator.free(error_bytes);
@@ -270,7 +330,7 @@ export fn begin_decrypt(
     var key: [32]u8 = undefined;
     @memcpy(&key, key_ptr[0..32]);
 
-    decrypt_session = blob_format.DecryptSession.init(allocator, key);
+    decrypt_session = WasmDecryptSession.init(allocator, key);
     return 0;
 }
 
