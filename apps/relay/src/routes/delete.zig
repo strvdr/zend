@@ -16,12 +16,12 @@ pub fn handleDelete(
     const query = if (qmark) |i| target[i + 1 ..] else "";
 
     const id = http_helpers.extractPathSuffix(path_only, "/blob/") orelse {
-        http_helpers.respondText(req, .bad_request, "Missing id");
+        http_helpers.respondText(req, cfg, .bad_request, "Missing id");
         return;
     };
 
     if (!ids.isValidId(id)) {
-        http_helpers.respondText(req, .bad_request, "Invalid id");
+        http_helpers.respondText(req, cfg, .bad_request, "Invalid id");
         return;
     }
 
@@ -35,7 +35,7 @@ pub fn handleDelete(
     }
 
     const provided_token = token orelse {
-        http_helpers.respondText(req, .bad_request, "Missing token");
+        http_helpers.respondText(req, cfg, .bad_request, "Missing token");
         return;
     };
 
@@ -43,20 +43,20 @@ pub fn handleDelete(
     defer allocator.free(meta_path);
 
     const meta = std.fs.cwd().readFileAlloc(allocator, meta_path, 1024) catch {
-        http_helpers.respondText(req, .not_found, "Not found");
+        http_helpers.respondText(req, cfg, .not_found, "Not found");
         return;
     };
     defer allocator.free(meta);
 
     const newline = std.mem.indexOfScalar(u8, meta, '\n') orelse {
-        http_helpers.respondText(req, .internal_server_error, "Corrupt metadata");
+        http_helpers.respondText(req, cfg, .internal_server_error, "Corrupt metadata");
         return;
     };
 
     const stored_token = std.mem.trim(u8, meta[0..newline], &std.ascii.whitespace);
 
     if (!std.mem.eql(u8, stored_token, provided_token)) {
-        http_helpers.respondText(req, .forbidden, "Invalid token");
+        http_helpers.respondText(req, cfg, .forbidden, "Invalid token");
         return;
     }
 
@@ -65,7 +65,7 @@ pub fn handleDelete(
     try req.respond("", .{
         .status = .no_content,
         .extra_headers = &.{
-            .{ .name = "access-control-allow-origin", .value = "*" },
+            .{ .name = "access-control-allow-origin", .value = cfg.allowed_origins },
         },
     });
 

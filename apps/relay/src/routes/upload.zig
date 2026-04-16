@@ -90,12 +90,12 @@ fn idFromPrefix(target: []const u8, prefix: []const u8) ?[]const u8 {
     return path[prefix.len..];
 }
 
-fn respondJson(req: *std.http.Server.Request, json: []const u8) void {
+fn respondJson(req: *std.http.Server.Request, cfg: runtime_config.RuntimeConfig, json: []const u8) void {
     req.respond(json, .{
         .status = .ok,
         .extra_headers = &.{
             .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "access-control-allow-origin", .value = "*" },
+            .{ .name = "access-control-allow-origin", .value = cfg.allowed_origins },
         },
     }) catch {};
 }
@@ -106,7 +106,7 @@ pub fn handleStart(
     cfg: runtime_config.RuntimeConfig,
 ) !void {
     if (req.head.method != .POST) {
-        http_helpers.respondText(req, .method_not_allowed, "Method not allowed");
+        http_helpers.respondText(req, cfg, .method_not_allowed, "Method not allowed");
         return;
     }
 
@@ -142,7 +142,7 @@ pub fn handleStart(
     );
     defer allocator.free(json);
 
-    respondJson(req, json);
+    respondJson(req, cfg, json);
 }
 
 pub fn handleAppend(
@@ -151,27 +151,27 @@ pub fn handleAppend(
     cfg: runtime_config.RuntimeConfig,
 ) !void {
     if (req.head.method != .POST) {
-        http_helpers.respondText(req, .method_not_allowed, "Method not allowed");
+        http_helpers.respondText(req, cfg, .method_not_allowed, "Method not allowed");
         return;
     }
 
     const id_slice = idFromPrefix(req.head.target, "/upload/append/") orelse {
-        http_helpers.respondText(req, .bad_request, "Missing upload id");
+        http_helpers.respondText(req, cfg, .bad_request, "Missing upload id");
         return;
     };
 
     const token_slice = queryValue(req.head.target, "token") orelse {
-        http_helpers.respondText(req, .unauthorized, "Missing token");
+        http_helpers.respondText(req, cfg, .unauthorized, "Missing token");
         return;
     };
 
     const index_str = queryValue(req.head.target, "index") orelse {
-        http_helpers.respondText(req, .bad_request, "Missing index");
+        http_helpers.respondText(req, cfg, .bad_request, "Missing index");
         return;
     };
 
     const index = std.fmt.parseInt(u32, index_str, 10) catch {
-        http_helpers.respondText(req, .bad_request, "Invalid index");
+        http_helpers.respondText(req, cfg, .bad_request, "Invalid index");
         return;
     };
 
@@ -182,7 +182,7 @@ pub fn handleAppend(
     defer allocator.free(token);
 
     var state = readUploadState(allocator, cfg, id) catch {
-        http_helpers.respondText(req, .not_found, "Upload session not found");
+        http_helpers.respondText(req, cfg, .not_found, "Upload session not found");
         return;
     };
     defer state.deinit(allocator);
@@ -199,7 +199,7 @@ pub fn handleAppend(
 
     if (!std.mem.eql(u8, state.token, token)) {
         std.log.err("upload append token mismatch id={s} index={d}", .{ id, index });
-        http_helpers.respondText(req, .unauthorized, "Invalid token");
+        http_helpers.respondText(req, cfg, .unauthorized, "Invalid token");
         return;
     }
 
@@ -209,7 +209,7 @@ pub fn handleAppend(
             index,
             state.next_index,
         });
-        http_helpers.respondText(req, .conflict, "Unexpected chunk index");
+        http_helpers.respondText(req, cfg, .conflict, "Unexpected chunk index");
         return;
     }
 
@@ -229,7 +229,7 @@ pub fn handleAppend(
 
         if (err == error.BodyTooLarge) {
             storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-            http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
+            http_helpers.respondText(req, cfg, .payload_too_large, "Upload exceeds the maximum allowed size");
             return;
         }
 
@@ -252,7 +252,7 @@ pub fn handleAppend(
             cfg.max_upload_bytes,
         });
         storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-        http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
+        http_helpers.respondText(req, cfg, .payload_too_large, "Upload exceeds the maximum allowed size");
         return;
     }
 
@@ -291,7 +291,7 @@ pub fn handleAppend(
             cfg.max_upload_bytes,
         });
         storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-        http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
+        http_helpers.respondText(req, cfg, .payload_too_large, "Upload exceeds the maximum allowed size");
         return;
     }
 
@@ -311,7 +311,7 @@ pub fn handleAppend(
         new_size,
     });
 
-    respondJson(req, "{\"ok\":true}");
+    respondJson(req, cfg, "{\"ok\":true}");
 }
 
 pub fn handleFinish(
@@ -320,29 +320,29 @@ pub fn handleFinish(
     cfg: runtime_config.RuntimeConfig,
 ) !void {
     if (req.head.method != .POST) {
-        http_helpers.respondText(req, .method_not_allowed, "Method not allowed");
+        http_helpers.respondText(req, cfg, .method_not_allowed, "Method not allowed");
         return;
     }
 
     const id = idFromPrefix(req.head.target, "/upload/finish/") orelse {
-        http_helpers.respondText(req, .bad_request, "Missing upload id");
+        http_helpers.respondText(req, cfg, .bad_request, "Missing upload id");
         return;
     };
 
     const token = queryValue(req.head.target, "token") orelse {
-        http_helpers.respondText(req, .unauthorized, "Missing token");
+        http_helpers.respondText(req, cfg, .unauthorized, "Missing token");
         return;
     };
 
     var state = readUploadState(allocator, cfg, id) catch {
-        http_helpers.respondText(req, .not_found, "Upload session not found");
+        http_helpers.respondText(req, cfg, .not_found, "Upload session not found");
         return;
     };
     defer state.deinit(allocator);
 
     if (!std.mem.eql(u8, state.token, token)) {
         std.log.err("upload finish token mismatch id={s}", .{id});
-        http_helpers.respondText(req, .unauthorized, "Invalid token");
+        http_helpers.respondText(req, cfg, .unauthorized, "Invalid token");
         return;
     }
 
@@ -377,7 +377,7 @@ pub fn handleFinish(
             cfg.max_upload_bytes,
         });
         storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-        http_helpers.respondText(req, .payload_too_large, "Upload exceeds the maximum allowed size");
+        http_helpers.respondText(req, cfg, .payload_too_large, "Upload exceeds the maximum allowed size");
         return;
     }
 
@@ -412,5 +412,5 @@ pub fn handleFinish(
     );
     defer allocator.free(json);
 
-    respondJson(req, json);
+    respondJson(req, cfg, json);
 }

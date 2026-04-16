@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime_config = @import("runtime_config.zig");
 
 pub fn readBody(
     req: *std.http.Server.Request,
@@ -42,6 +43,7 @@ pub fn extractPathSuffix(target: []const u8, prefix: []const u8) ?[]const u8 {
 
 pub fn respondText(
     req: *std.http.Server.Request,
+    cfg: runtime_config.RuntimeConfig,
     status: std.http.Status,
     msg: []const u8,
 ) void {
@@ -49,7 +51,7 @@ pub fn respondText(
         .status = status,
         .extra_headers = &.{
             .{ .name = "content-type", .value = "text/plain" },
-            .{ .name = "access-control-allow-origin", .value = "*" },
+            .{ .name = "access-control-allow-origin", .value = cfg.allowed_origins },
         },
     }) catch {};
 }

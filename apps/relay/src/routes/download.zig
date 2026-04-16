@@ -9,19 +9,19 @@ pub fn handleDownload(
     cfg: runtime_config.RuntimeConfig,
 ) !void {
     if (req.head.method != .GET) {
-        http_helpers.respondText(req, .method_not_allowed, "Method not allowed");
+        http_helpers.respondText(req, cfg, .method_not_allowed, "Method not allowed");
         return;
     }
 
     const prefix = "/download/";
     if (!std.mem.startsWith(u8, req.head.target, prefix)) {
-        http_helpers.respondText(req, .bad_request, "Invalid download path");
+        http_helpers.respondText(req, cfg, .bad_request, "Invalid download path");
         return;
     }
 
     const id = req.head.target[prefix.len..];
     if (id.len == 0) {
-        http_helpers.respondText(req, .bad_request, "Missing id");
+        http_helpers.respondText(req, cfg, .bad_request, "Missing id");
         return;
     }
 
@@ -32,7 +32,7 @@ pub fn handleDownload(
 
     const data = std.fs.cwd().readFileAlloc(allocator, blob_path, cfg.max_upload_bytes) catch {
         std.log.err("download not found id={s} path={s}", .{ id, blob_path });
-        http_helpers.respondText(req, .not_found, "Not found");
+        http_helpers.respondText(req, cfg, .not_found, "Not found");
         return;
     };
     defer allocator.free(data);
@@ -47,7 +47,7 @@ pub fn handleDownload(
         .status = .ok,
         .extra_headers = &.{
             .{ .name = "content-type", .value = "application/octet-stream" },
-            .{ .name = "access-control-allow-origin", .value = "*" },
+            .{ .name = "access-control-allow-origin", .value = cfg.allowed_origins },
         },
     });
 

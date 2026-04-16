@@ -39,7 +39,7 @@ fn classifyRoute(path: []const u8) rate_limit.RouteKind {
     return .other;
 }
 
-fn respondRateLimited(req: *std.http.Server.Request, retry_after_seconds: u32) void {
+fn respondRateLimited(req: *std.http.Server.Request, cfg: runtime_config.RuntimeConfig, retry_after_seconds: u32) void {
     var retry_buf: [32]u8 = undefined;
     const retry_value = std.fmt.bufPrint(&retry_buf, "{d}", .{retry_after_seconds}) catch "60";
 
@@ -47,7 +47,7 @@ fn respondRateLimited(req: *std.http.Server.Request, retry_after_seconds: u32) v
         .status = .too_many_requests,
         .extra_headers = &.{
             .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-            .{ .name = "access-control-allow-origin", .value = "*" },
+            .{ .name = "access-control-allow-origin", .value = cfg.allowed_origins },
             .{ .name = "retry-after", .value = retry_value },
         },
     }) catch {};
@@ -89,7 +89,7 @@ fn handleConnection(
             req.respond("", .{
                 .status = .no_content,
                 .extra_headers = &.{
-                    .{ .name = "access-control-allow-origin", .value = "*" },
+                    .{ .name = "access-control-allow-origin", .value = cfg.allowed_origins },
                     .{ .name = "access-control-allow-methods", .value = "GET, POST, DELETE, OPTIONS" },
                     .{ .name = "access-control-allow-headers", .value = "content-type" },
                 },
@@ -105,14 +105,14 @@ fn handleConnection(
                 path,
                 decision.retry_after_seconds,
             });
-            respondRateLimited(&req, decision.retry_after_seconds);
+            respondRateLimited(&req, cfg, decision.retry_after_seconds);
             continue;
         }
 
         if (std.mem.eql(u8, path, "/upload/start")) {
             upload.handleStart(&req, allocator, cfg) catch |err| {
                 std.log.err("upload start failed: {s}", .{@errorName(err)});
-                http_helpers.respondText(&req, .internal_server_error, "Upload start failed");
+                http_helpers.respondText(&req, cfg, .internal_server_error, "Upload start failed");
             };
             continue;
         }
@@ -120,7 +120,7 @@ fn handleConnection(
         if (std.mem.startsWith(u8, path, "/upload/append/")) {
             upload.handleAppend(&req, allocator, cfg) catch |err| {
                 std.log.err("upload append failed: {s}", .{@errorName(err)});
-                http_helpers.respondText(&req, .internal_server_error, "Upload append failed");
+                http_helpers.respondText(&req, cfg, .internal_server_error, "Upload append failed");
             };
             continue;
         }
@@ -128,7 +128,7 @@ fn handleConnection(
         if (std.mem.startsWith(u8, path, "/upload/finish/")) {
             upload.handleFinish(&req, allocator, cfg) catch |err| {
                 std.log.err("upload finish failed: {s}", .{@errorName(err)});
-                http_helpers.respondText(&req, .internal_server_error, "Upload finish failed");
+                http_helpers.respondText(&req, cfg, .internal_server_error, "Upload finish failed");
             };
             continue;
         }
@@ -136,7 +136,7 @@ fn handleConnection(
         if (std.mem.startsWith(u8, path, "/download/")) {
             download.handleDownload(&req, allocator, cfg) catch |err| {
                 std.log.err("download failed: {s}", .{@errorName(err)});
-                http_helpers.respondText(&req, .internal_server_error, "Download failed");
+                http_helpers.respondText(&req, cfg, .internal_server_error, "Download failed");
             };
             continue;
         }
@@ -144,12 +144,12 @@ fn handleConnection(
         if (std.mem.startsWith(u8, path, "/delete/")) {
             delete.handleDelete(&req, allocator, cfg) catch |err| {
                 std.log.err("delete failed: {s}", .{@errorName(err)});
-                http_helpers.respondText(&req, .internal_server_error, "Delete failed");
+                http_helpers.respondText(&req, cfg, .internal_server_error, "Delete failed");
             };
             continue;
         }
 
-        http_helpers.respondText(&req, .not_found, "Not found");
+        http_helpers.respondText(&req, cfg, .not_found, "Not found");
     }
 }
 
