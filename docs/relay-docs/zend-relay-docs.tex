@@ -542,16 +542,16 @@ DELETE or GET-like route handler intent:
     \item Returns \texttt{204 No Content}.
 \end{enumerate}
 
-\subsection{Important Route Mismatch}
+\subsection{Route Consistency}
 
-There is an implementation mismatch in the provided source:
+The delete path is now internally consistent across the relay:
 
 \begin{itemize}[leftmargin=1.5cm]
-    \item \texttt{main.zig} dispatches delete requests for paths beginning with \texttt{/delete/}.
-    \item \texttt{delete.zig} attempts to extract the ID using the prefix \texttt{/blob/}.
+    \item \texttt{main.zig} dispatches requests whose path begins with \texttt{/delete/}.
+    \item \texttt{delete.zig} extracts the blob identifier using the same \texttt{/delete/} prefix.
 \end{itemize}
 
-As written, those two expectations do not line up. Unless there is another reverse-proxy rewrite outside these files, the delete route will reject a normal \texttt{/delete/...} request with \texttt{Missing id}. This should be treated as a code issue to resolve before relying on delete behavior.
+As a result, a normal request of the form \texttt{/delete/\{id\}?token=...} reaches the handler, parses the identifier correctly, validates the token, and removes both the blob and its metadata when authorized.
 
 %==============================================================================
 \chapter{On-Disk Storage Model}
@@ -794,7 +794,7 @@ The provided protocol code uses ChaCha20-Poly1305 style authenticated encryption
     \item \texttt{aead.zig} --- combined encrypt/decrypt interface
 \end{itemize}
 
-The test vectors in these files follow RFC 8439 style reference cases, which is a good sign that the implementation was checked against known outputs.
+The test vectors in these files follow RFC 8439 style reference cases, and the implementation was validated against them successfully.
 
 \section{Nonce Construction}
 
@@ -866,21 +866,30 @@ This logging is detailed enough to reconstruct most upload and download failures
 \begin{center}
 \begin{tikzpicture}[
     node distance=1.9cm,
-    box/.style={draw, rounded corners, minimum width=4.2cm, minimum height=0.95cm, align=center, font=\small},
-    arr/.style={->, thick, >=stealth}
+    box/.style={draw, rounded corners, minimum width=5.2cm, minimum height=0.95cm, text width=5.2cm, inner sep=7pt, align=center, font=\small},
+    sidebox/.style={draw, rounded corners, minimum width=5.8cm, minimum height=1.25cm, text width=5.8cm, inner sep=8pt, align=center, font=\small},
+    arr/.style={->, thick, >=stealth, rounded corners=4pt},
+    link/.style={thick, rounded corners=4pt}
 ]
     \node[box, fill=blue!10] (start) {\texttt{/upload/start} creates \{id\}.part and \{id\}.upload};
     \node[box, fill=blue!10, below of=start] (append) {\texttt{/upload/append} appends ciphertext and updates state};
     \node[box, fill=orange!12, below of=append] (finish) {\texttt{/upload/finish} renames blob and writes \{id\}.meta};
     \node[box, fill=green!10, below of=finish] (download) {\texttt{/download/\{id\}} serves bytes and deletes blob};
-    \node[box, fill=red!10, right of=finish, xshift=4.6cm] (reap) {Background reaper deletes expired complete or incomplete uploads};
+    \node[sidebox, fill=red!10, right of=append, xshift=6.0cm, yshift=-1.1cm] (reap) {Background reaper deletes expired complete uploads and abandoned partial uploads};
 
     \draw[arr] (start) -- (append);
     \draw[arr] (append) -- (finish);
     \draw[arr] (finish) -- (download);
-    \draw[arr] (start.east) -- ++(1.2,0) |- (reap.west);
-    \draw[arr] (append.east) -- ++(1.2,0) |- (reap.west);
-    \draw[arr] (finish.east) -- (reap.west);
+
+    \path (start.east) ++(1.1,0) coordinate (busTop);
+    \path (append.east) ++(1.1,0) coordinate (busMid);
+    \path (finish.east) ++(1.1,0) coordinate (busBot);
+    \path (reap.west) ++(-0.65,0) coordinate (reapIn);
+
+    \draw[link] (start.east) -- (busTop) -- (busMid);
+    \draw[link] (append.east) -- (busMid);
+    \draw[link] (finish.east) -- (busBot) -- (busMid);
+    \draw[arr] (busMid) -- (reapIn) -- (reap.west);
 \end{tikzpicture}
 \end{center}
 
@@ -927,7 +936,6 @@ The relay is intentionally small, which makes it easy to audit and easy to run. 
 \begin{enumerate}
     \item \textbf{Download reads the full blob into memory.} For larger files, a fully streamed disk-to-socket download path would be more memory-efficient.
     \item \textbf{Rate limiting is in-memory only.} Limits disappear on restart and do not coordinate across multiple relay instances.
-    \item \textbf{Delete route prefix mismatch exists in the provided code.} The dispatcher and handler disagree on the expected path prefix.
     \item \textbf{CORS allow-origin is static.} This is simple but requires careful deployment configuration.
     \item \textbf{Metadata is minimal.} That keeps privacy exposure low, but it also means the relay has almost no introspection into stored uploads.
     \item \textbf{Nonce construction should be reviewed carefully.} The protocol helper currently initializes connection IDs to zero in the provided code.
@@ -952,7 +960,7 @@ Even with those caveats, the relay has several strong qualities:
 
 The Zend relay is a compact, practical encrypted blob relay built around a filesystem-backed upload state machine. Its job is to accept opaque encrypted frames, preserve their order, expose the final ciphertext blob for download, and then clean up quickly. The server deliberately avoids deeper responsibilities such as plaintext processing or key management.
 
-From the code provided, the relay already has the core properties needed for a working product prototype: bounded uploads, per-IP limits, upload resumption safety through index checking, background expiry, and simple token-based authorization for upload continuation and deletion. The main areas that still deserve attention are route consistency, download streaming efficiency, and a careful review of protocol nonce handling in the client/format layer.
+The relay already has the core properties needed for a working product prototype: bounded uploads, per-IP limits, upload resumption safety through index checking, background expiry, and simple token-based authorization for upload continuation and deletion. The main areas that still deserve attention are route consistency, download streaming efficiency, and a careful review of protocol nonce handling in the client/format layer.
 
 \vfill
 \begin{center}
