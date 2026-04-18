@@ -69,6 +69,8 @@ fn reapIncompleteEntry(
 
     var it = std.mem.splitScalar(u8, content, '\n');
 
+    // .upload files are tiny line-based state snapshots written by the append
+    // route, so reaping can recover without needing any extra index.
     _ = it.next() orelse return; // token
     const created_line = it.next() orelse return;
     const created = std.fmt.parseInt(i64, created_line, 10) catch return;
@@ -76,6 +78,6 @@ fn reapIncompleteEntry(
     if (std.time.timestamp() - created > cfg.incomplete_ttl_seconds) {
         const id = entry_name[0 .. entry_name.len - ".upload".len];
         storage.deleteUploadTempFiles(allocator, cfg.blob_dir, id);
-        std.log.info("reaped abandoned upload id={s}", .{id});
+        std.log.info("reaped incomplete upload id={s}", .{id});
     }
 }

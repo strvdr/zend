@@ -66,6 +66,8 @@ pub const RateLimiter = struct {
         }
 
         var entry = gop.value_ptr;
+        // Each IP gets one rolling fixed-size bucket. Once the window expires we
+        // reset every per-route counter together.
         if (now - entry.window_started_at >= window) {
             entry.* = .{
                 .window_started_at = now,

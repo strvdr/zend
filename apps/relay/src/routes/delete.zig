@@ -15,7 +15,7 @@ pub fn handleDelete(
     const path_only = if (qmark) |i| target[0..i] else target;
     const query = if (qmark) |i| target[i + 1 ..] else "";
 
-    const id = http_helpers.extractPathSuffix(path_only, "/blob/") orelse {
+    const id = http_helpers.extractPathSuffix(path_only, "/delete/") orelse {
         http_helpers.respondText(req, cfg, .bad_request, "Missing id");
         return;
     };

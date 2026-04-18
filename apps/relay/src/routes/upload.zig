@@ -203,6 +203,8 @@ pub fn handleAppend(
         return;
     }
 
+    // Appends are strictly ordered. That lets the relay stay dumb: it only ever
+    // appends bytes to the end of the .part file and never has to seek by chunk.
     if (index != state.next_index) {
         std.log.err("upload append unexpected index id={s} got={d} expected={d}", .{
             id,
@@ -295,6 +297,8 @@ pub fn handleAppend(
         return;
     }
 
+    // The state file is the relay's source of truth for resumability/order.
+    // We update it only after the bytes are durably written.
     try writeUploadState(
         allocator,
         cfg,
@@ -381,6 +385,8 @@ pub fn handleFinish(
         return;
     }
 
+    // Finishing is a small commit step: promote the .part file to the real blob,
+    // write metadata, then drop the temporary upload state.
     try std.fs.cwd().rename(tmp_blob_path, blob_path);
     errdefer std.fs.cwd().deleteFile(blob_path) catch {};
 

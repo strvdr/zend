@@ -17,6 +17,8 @@ fn clientIpString(allocator: std.mem.Allocator, conn: std.net.Server.Connection)
 
     if (full.len == 0) return allocator.dupe(u8, "unknown");
 
+    // The formatter gives us host:port (or [v6]:port). Strip the port so the
+    // limiter keys off a stable client IP regardless of the ephemeral source port.
     if (full[0] == '[') {
         const end = std.mem.indexOfScalar(u8, full, ']') orelse full.len;
         if (end > 1) return allocator.dupe(u8, full[1..end]);
@@ -97,6 +99,8 @@ fn handleConnection(
             continue;
         }
 
+        // Rate limiting happens once we know the route shape so one IP cannot
+        // starve the relay by spamming a single hot endpoint.
         const route_kind = classifyRoute(path);
         const decision = try limiter.allow(client_ip, route_kind);
         if (!decision.allowed) {
@@ -185,6 +189,8 @@ pub fn main() !void {
         cfg.rate_limit_max_downloads_per_ip,
     });
 
+    // Cleanup runs on its own cadence so expired blobs do not require a request
+    // path to come through first.
     const reaper_thread = try std.Thread.spawn(.{}, reaper.reapLoop, .{ allocator, cfg });
     reaper_thread.detach();
 

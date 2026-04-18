@@ -69,6 +69,8 @@ pub fn deleteUploadTempFiles(
     blob_dir: []const u8,
     id: []const u8,
 ) void {
+    // Incomplete uploads live as two files: the .part payload and the .upload
+    // progress record. We always clean them up as a pair.
     if (tmpBlobPath(allocator, blob_dir, id)) |p| {
         defer allocator.free(p);
         std.fs.cwd().deleteFile(p) catch {};

@@ -14,6 +14,9 @@ pub fn readBody(
         return try allocator.alloc(u8, 0);
     }
 
+    // Append requests are intentionally buffered in full here. That keeps the
+    // route code simple and avoids the std.http streaming edge cases we hit
+    // earlier while still enforcing a hard per-request cap.
     var body_buf: [64 * 1024]u8 = undefined;
     var body_reader = req.server.reader.bodyReader(
         &body_buf,
