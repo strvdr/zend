@@ -146,7 +146,6 @@ pub fn build(b: *std.Build) void {
 
     exe.entry = .disabled;
     exe.rdynamic = true;
-    exe.import_memory = true;
     exe.export_table = true;
 
     // 2 MiB initial memory, 16 MiB max.

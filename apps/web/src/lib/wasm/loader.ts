@@ -9,16 +9,7 @@ export async function loadWasm() {
   }
 
   const bytes = await res.arrayBuffer();
-
-  const memory = new WebAssembly.Memory({
-    initial: 32,
-    maximum: 256,
-  });
-
-  const { instance } = await WebAssembly.instantiate(bytes, {
-    env: { memory },
-  });
-
+  const { instance } = await WebAssembly.instantiate(bytes, {});
   wasm = instance;
   return instance;
 }
