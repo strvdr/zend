@@ -3,7 +3,7 @@ let wasm: WebAssembly.Instance | null = null;
 export async function loadWasm() {
   if (wasm) return wasm;
 
-  const res = await fetch("/zend_wasmv2.wasm");
+  const res = await fetch("/zend_wasm.wasm");
   if (!res.ok) {
     throw new Error(`Failed to load wasm: ${res.status}`);
   }

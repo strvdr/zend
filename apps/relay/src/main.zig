@@ -1,11 +1,11 @@
 const std = @import("std");
-const runtime_config = @import("runtime_config.zig");
-const http_helpers = @import("http_helpers.zig");
-const upload = @import("routes/upload.zig");
-const download = @import("routes/download.zig");
-const delete = @import("routes/delete.zig");
-const reaper = @import("reaper.zig");
-const rate_limit = @import("rate_limit.zig");
+const runtime_config = @import("runtime_config");
+const http_helpers = @import("http_helpers");
+const upload = @import("upload");
+const download = @import("download");
+const delete = @import("delete");
+const reaper = @import("reaper");
+const rate_limit = @import("rate_limit");
 
 fn pathWithoutQuery(target: []const u8) []const u8 {
     return target[0 .. std.mem.indexOfScalar(u8, target, '?') orelse target.len];

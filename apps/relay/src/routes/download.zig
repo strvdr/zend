@@ -1,7 +1,7 @@
 const std = @import("std");
-const http_helpers = @import("../http_helpers.zig");
-const storage = @import("../storage.zig");
-const runtime_config = @import("../runtime_config.zig");
+const http_helpers = @import("http_helpers");
+const storage = @import("storage");
+const runtime_config = @import("runtime_config");
 
 pub fn handleDownload(
     req: *std.http.Server.Request,

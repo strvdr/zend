@@ -1,8 +1,8 @@
 const std = @import("std");
-const ids = @import("../ids.zig");
-const storage = @import("../storage.zig");
-const http_helpers = @import("../http_helpers.zig");
-const runtime_config = @import("../runtime_config.zig");
+const ids = @import("ids");
+const storage = @import("storage");
+const http_helpers = @import("http_helpers");
+const runtime_config = @import("runtime_config");
 
 pub fn handleDelete(
     req: *std.http.Server.Request,

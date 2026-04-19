@@ -1,5 +1,5 @@
 const std = @import("std");
-const defaults = @import("config.zig");
+const defaults = @import("config");
 
 pub const RuntimeConfig = struct {
     host: []const u8,

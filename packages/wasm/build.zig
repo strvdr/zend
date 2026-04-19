@@ -139,21 +139,22 @@ pub fn build(b: *std.Build) void {
     });
     addSharedImports(wasm_root, shared);
 
-    const lib = b.addLibrary(.{
+    const exe = b.addExecutable(.{
         .name = "zend_wasm",
         .root_module = wasm_root,
-        .linkage = .static,
     });
 
-    lib.entry = .disabled;
-    lib.rdynamic = true;
-    lib.import_memory = true;
-    lib.initial_memory = 17 * 64 * 1024;
-    lib.max_memory = 256 * 64 * 1024;
-    lib.export_table = true;
+    exe.entry = .disabled;
+    exe.rdynamic = true;
+    exe.import_memory = true;
+    exe.export_table = true;
 
-    b.installArtifact(lib);
+    // 2 MiB initial memory, 16 MiB max.
+    exe.initial_memory = 32 * 64 * 1024;
+    exe.max_memory = 256 * 64 * 1024;
+
+    b.installArtifact(exe);
 
     const check = b.step("check", "Check that the WASM module compiles");
-    check.dependOn(&lib.step);
+    check.dependOn(&exe.step);
 }

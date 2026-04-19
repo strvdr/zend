@@ -1,8 +1,8 @@
 const std = @import("std");
-const ids = @import("../ids.zig");
-const http_helpers = @import("../http_helpers.zig");
-const storage = @import("../storage.zig");
-const runtime_config = @import("../runtime_config.zig");
+const ids = @import("ids");
+const http_helpers = @import("http_helpers");
+const storage = @import("storage");
+const runtime_config = @import("runtime_config");
 
 const UploadState = struct {
     token: []u8,

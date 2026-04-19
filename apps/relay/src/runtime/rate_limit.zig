@@ -1,5 +1,5 @@
 const std = @import("std");
-const runtime_config = @import("runtime_config.zig");
+const runtime_config = @import("runtime_config");
 
 pub const RouteKind = enum {
     upload_start,

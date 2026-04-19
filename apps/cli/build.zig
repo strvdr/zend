@@ -195,7 +195,7 @@ pub fn build(b: *std.Build) void {
     addSharedImports(http_mod, shared);
 
     const relay_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/relay.zig"),
+        .root_source_file = b.path("src/relay/relay.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -203,7 +203,7 @@ pub fn build(b: *std.Build) void {
     relay_mod.addImport("http", http_mod);
 
     const send_mod = b.createModule(.{
-        .root_source_file = b.path("src/send.zig"),
+        .root_source_file = b.path("src/commands/send.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -219,7 +219,7 @@ pub fn build(b: *std.Build) void {
     send_mod.addImport("packet_types", shared.packet_types);
 
     const recv_mod = b.createModule(.{
-        .root_source_file = b.path("src/recv.zig"),
+        .root_source_file = b.path("src/commands/recv.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -230,7 +230,7 @@ pub fn build(b: *std.Build) void {
     recv_mod.addImport("progress", progress_mod);
 
     const download_mod = b.createModule(.{
-        .root_source_file = b.path("src/download.zig"),
+        .root_source_file = b.path("src/commands/download.zig"),
         .target = target,
         .optimize = optimize,
     });

@@ -1,7 +1,7 @@
 const std = @import("std");
-const config = @import("config.zig");
-const runtime_config = @import("runtime_config.zig");
-const storage = @import("storage.zig");
+const config = @import("config");
+const runtime_config = @import("runtime_config");
+const storage = @import("storage");
 
 pub fn reapLoop(
     allocator: std.mem.Allocator,
