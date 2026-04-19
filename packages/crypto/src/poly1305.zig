@@ -3,6 +3,8 @@
 // receiver computes tag and rejects the message
 // if it doesn't match. ChaCha20 provides confidentiality
 // and Poly1305 provides integrity
+//
+// read more: https://datatracker.ietf.org/doc/html/rfc8439
 
 const std = @import("std");
 

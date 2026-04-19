@@ -1,3 +1,5 @@
+// read more: https://datatracker.ietf.org/doc/html/rfc8439
+
 const std = @import("std");
 
 fn chachaBlock(key: [8]u32, counter: u32, nonce: [3]u32) [16]u32 { 

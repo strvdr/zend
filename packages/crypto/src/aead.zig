@@ -2,23 +2,21 @@ const std = @import("std");
 const chacha20 = @import("chacha20");
 const poly1305 = @import("poly1305");
 
-//This calls your `chacha20Xor` with counter 0 on a 32-byte zero buffer. The "encrypted" zeros are 
-//the keystream itself — which becomes your Poly1305 key. You already have an equivalent 
-//operation: XOR zeros with the keystream gives you the keystream.
-//
-//Allocate a `[64]u8` zero buffer (one full block), run `chacha20Xor` with counter 0 on it, and return the first 32 bytes.
-//---
-//### Step 2: Build the MAC Data
-//Poly1305 doesn't just authenticate the ciphertext. It authenticates a carefully constructed byte sequence:
-//```
-//aad || pad16(aad) || ciphertext || pad16(ciphertext) || aad_len_le64 || ct_len_le64
-fn poly1305KeyGen(key: [32] u8, nonce: [12] u8) [32]u8 {
+fn poly1305KeyGen(key: [32]u8, nonce: [12]u8) [32]u8 {
+    // ChaCha20-Poly1305 derives the one-time MAC key from block counter 0.
+    // We generate one keystream block and take its first 32 bytes.
     var block = [_]u8{0} ** 64;
     chacha20.chacha20Xor(key, nonce, 0, &block);
     return block[0..32].*;
 }
 
 fn buildMacData(aad: []const u8, ciphertext: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    // Poly1305 authenticates a specific padded layout:
+    //   aad || pad16(aad) || ciphertext || pad16(ciphertext)
+    //   || aad_len_le64 || ciphertext_len_le64
+    //
+    // The padding bytes are zeros and are only present to align each section
+    // to a 16-byte boundary as required by RFC 8439.
     const aadPad = if (aad.len % 16 == 0) 0 else 16 - (aad.len % 16);
     const ctPad = if (ciphertext.len % 16 == 0) 0 else 16 - (ciphertext.len % 16);
     const totalLen = aad.len + aadPad + ciphertext.len + ctPad + 8 + 8;
@@ -26,19 +24,15 @@ fn buildMacData(aad: []const u8, ciphertext: []const u8, allocator: std.mem.Allo
     const buf = try allocator.alloc(u8, totalLen);
     var offset: usize = 0;
 
-    //aad
     @memcpy(buf[offset..][0..aad.len], aad);
     offset += aad.len;
- 
-    //aadPad
+
     @memset(buf[offset..][0..aadPad], 0);
     offset += aadPad;
 
-    //ciphertext
     @memcpy(buf[offset..][0..ciphertext.len], ciphertext);
     offset += ciphertext.len;
- 
-    //aadPad
+
     @memset(buf[offset..][0..ctPad], 0);
     offset += ctPad;
 
@@ -52,8 +46,11 @@ fn buildMacData(aad: []const u8, ciphertext: []const u8, allocator: std.mem.Allo
 
 pub fn encrypt(key: [32]u8, nonce: [12]u8, plaintext: []u8, aad: []const u8, out_tag: *[16]u8, allocator: std.mem.Allocator) !void {
     const oneTimeKey: [32]u8 = poly1305KeyGen(key, nonce);
- 
+
+    // Encrypt in place using ChaCha20 with counter 1.
+    // Counter 0 is reserved for the Poly1305 key derivation step above.
     chacha20.chacha20Xor(key, nonce, 1, plaintext);
+
     const macData: []u8 = try buildMacData(aad, plaintext, allocator);
     defer allocator.free(macData);
 
@@ -67,12 +64,14 @@ pub fn decrypt(key: [32]u8, nonce: [12]u8, ciphertext: []u8, aad: []const u8, ta
 
     const expectedTag = poly1305.poly1305Mac(macData, oneTimeKey);
 
+    // Always verify the tag before decrypting.
+    // That prevents unauthenticated bytes from ever being treated as plaintext.
     var match = true;
-    for(expectedTag, tag) |a, b| {
-        if(a != b) match = false;
+    for (expectedTag, tag) |a, b| {
+        if (a != b) match = false;
     }
 
-    if(!match) return error.AuthenticationFailed;
+    if (!match) return error.AuthenticationFailed;
 
     chacha20.chacha20Xor(key, nonce, 1, ciphertext);
 }

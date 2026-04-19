@@ -4,32 +4,7 @@ pub const BitWriter = struct {
     output: std.ArrayList(u8),
     currentByte: u8,
     bitCount: u3, 
-
-    pub fn writeBit(self: *BitWriter, allocator: std.mem.Allocator, bit: u1) !void {
-        self.currentByte = (self.currentByte << 1) | bit;
-        self.bitCount +%= 1;
-        
-        if(self.bitCount == 0) {
-            try self.output.append(allocator, self.currentByte);
-            self.currentByte = 0;
-        }
-    }
-
-    pub fn writeBits(self: *BitWriter, allocator: std.mem.Allocator, bits: []const u1) !void {
-        for(bits) |bit| {
-            try self.writeBit(allocator, bit);
-        }
-    }
-
-    pub fn flush(self: *BitWriter, allocator: std.mem.Allocator) !void {
-        if(self.bitCount > 0) {
-            const shift: u4 = @as(u4, 8) - @as(u4, self.bitCount);
-            try self.output.append(allocator, self.currentByte << @intCast(shift));
-            self.currentByte = 0;
-            self.bitCount = 0;
-        }
-    }
-
+    
     pub fn init() BitWriter {
         return .{
             .output = .{},
@@ -40,6 +15,38 @@ pub const BitWriter = struct {
 
     pub fn deinit(self: *BitWriter, allocator: std.mem.Allocator) void {
         self.output.deinit(allocator);
+    }
+
+    pub fn writeBit(self: *BitWriter, allocator: std.mem.Allocator, bit: u1) !void {
+        // Bits are packed from most-significant to least-significant position
+        // within each output byte.
+        self.currentByte = (self.currentByte << 1) | bit;
+        self.bitCount +%= 1;
+        
+        if(self.bitCount == 0) {
+            // Once a byte is full, emit it and reset the staging state.
+            try self.output.append(allocator, self.currentByte);
+            self.currentByte = 0;
+        }
+    }
+
+    pub fn writeBits(self: *BitWriter, allocator: std.mem.Allocator, bits: []const u1) !void {
+        // writeBits() emits the high bit first so the logical bitstream order
+        // matches the order used by the Huffman codes.
+        for(bits) |bit| {
+            try self.writeBit(allocator, bit);
+        }
+    }
+
+    pub fn flush(self: *BitWriter, allocator: std.mem.Allocator) !void {
+        if(self.bitCount > 0) {
+            // Any partially filled byte is emitted as-is with zero padding in
+            // the unused low bits.
+            const shift: u4 = @as(u4, 8) - @as(u4, self.bitCount);
+            try self.output.append(allocator, self.currentByte << @intCast(shift));
+            self.currentByte = 0;
+            self.bitCount = 0;
+        }
     }
 };
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const aead = @import("aead");
 const huffman = @import("huffman");
-const pkt = @import("packet_types.zig");
+const pkt = @import("packet_types");
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const INTEGRITY_PACKET_SIZE: usize = 8 + 32; // plaintext_size(u64 LE) + sha256
@@ -18,6 +18,11 @@ pub const DecryptedFile = struct {
 };
 
 fn makeNonce(connection_id: [4]u8, counter: u64) [12]u8 {
+    // Every encrypted packet uses a nonce built from:
+    // - a per-transfer connection id
+    // - a monotonically increasing packet counter
+    //
+    // The important invariant is that a given key must never reuse a nonce.
     var nonce = [_]u8{0} ** 12;
     @memcpy(nonce[0..4], &connection_id);
     std.mem.writeInt(u64, nonce[4..12], counter, .little);
@@ -35,12 +40,21 @@ fn encryptAndAppend(
 ) !void {
     const nonce = makeNonce(connection_id, counter.*);
 
+    // AEAD encrypts in place, so duplicate the plaintext before mutating it.
+    // This keeps the caller's buffer ownership simple and predictable.
     const ciphertext = try allocator.dupe(u8, plaintext);
     defer allocator.free(ciphertext);
 
     var tag: [pkt.TAG_SIZE]u8 = undefined;
     try aead.encrypt(key, nonce, ciphertext, &[_]u8{}, &tag, allocator);
 
+    // Each frame on disk / over the wire is stored as:
+    //   u32 frame_len (big-endian)
+    //   u8  packet_type
+    //   [ciphertext]
+    //   [tag]
+    //
+    // The length includes everything after the length field.
     const frame_len: u32 = @intCast(1 + ciphertext.len + pkt.TAG_SIZE);
 
     var len_buf: [pkt.FRAME_LEN_SIZE]u8 = undefined;
@@ -85,6 +99,9 @@ pub const EncryptSession = struct {
             .plaintext_hasher = Sha256.init(.{}),
         };
 
+        // A session always begins by emitting metadata.
+        // That means the first resultSlice() after init() already contains a
+        // complete encrypted metadata frame ready to upload or write.
         try self.emitMetadata(filename);
         self.started = true;
         return self;
@@ -95,12 +112,21 @@ pub const EncryptSession = struct {
     }
 
     fn clearResult(self: *EncryptSession) void {
+        // result is reused as a "latest encoded output" scratch buffer.
+        // Each call replaces the previous frame(s) instead of appending forever.
         self.result.clearRetainingCapacity();
     }
 
     fn emitMetadata(self: *EncryptSession, filename: []const u8) !void {
         self.clearResult();
 
+        // Metadata plaintext layout:
+        //   u16 filename_len
+        //   [filename bytes]
+        //   u64 total_plaintext_size
+        //
+        // This must be the first packet so the decoder knows what file it is
+        // reconstructing before any chunk data arrives.
         var meta_buf = try self.allocator.alloc(u8, 2 + filename.len + 8);
         defer self.allocator.free(meta_buf);
 
@@ -124,15 +150,26 @@ pub const EncryptSession = struct {
         if (self.finished) return error.SessionAlreadyFinished;
 
         self.clearResult();
+
+        // Hash the original plaintext, not the compressed bytes.
+        // The integrity packet later proves the final recovered file contents.
         self.plaintext_hasher.update(plaintext_chunk);
 
         const compressed = huffman.encode(plaintext_chunk, self.allocator) catch null;
         defer if (compressed) |c| self.allocator.free(c);
 
+         // Compression is opportunistic: only use it when it actually wins.
         const use_compression = if (compressed) |c| c.len < plaintext_chunk.len else false;
         const payload = if (use_compression) compressed.? else plaintext_chunk;
         const flag: u8 = if (use_compression) 0x01 else 0x00;
 
+        // Chunk plaintext layout:
+        //   u32 chunk_index
+        //   u8  compression_flag
+        //   [payload bytes]
+        //
+        // The explicit index makes the stream format easier to validate and
+        // safer to debug when something goes out of order.
         var chunk_buf = try self.allocator.alloc(u8, pkt.CHUNK_HEADER_SIZE + payload.len);
         defer self.allocator.free(chunk_buf);
 
@@ -163,6 +200,10 @@ pub const EncryptSession = struct {
         var hasher = self.plaintext_hasher;
         hasher.final(&digest);
 
+        
+        // The integrity packet authenticates the recovered plaintext as a whole.
+        // It lets the decoder verify both final size and final hash before
+        // treating the file as complete.
         var integrity_buf: [INTEGRITY_PACKET_SIZE]u8 = undefined;
         std.mem.writeInt(u64, integrity_buf[0..8], self.total_plaintext_size, .little);
         @memcpy(integrity_buf[8..], &digest);
@@ -177,6 +218,8 @@ pub const EncryptSession = struct {
             self.allocator,
         );
 
+        // DONE carries the number of emitted chunks.
+        // It is the decoder's signal that no more frames should follow.
         var done_buf: [4]u8 = undefined;
         std.mem.writeInt(u32, &done_buf, self.chunk_index, .little);
 
@@ -275,6 +318,9 @@ pub const DecryptSession = struct {
             const total_frame_bytes = pkt.FRAME_LEN_SIZE + frame_len;
             if (available < total_frame_bytes) break;
 
+            
+            // At this point we know we have one full frame buffered.
+            // Anything incomplete stays in pending until more bytes arrive.
             const frame_start = pos + pkt.FRAME_LEN_SIZE;
             const frame_end = pos + total_frame_bytes;
             const frame = self.pending.items[frame_start..frame_end];
@@ -295,6 +341,8 @@ pub const DecryptSession = struct {
             const nonce = makeNonce(self.connection_id, self.counter);
             self.counter += 1;
 
+            // Decrypt exactly one packet at a time in stream order.
+            // The counter advances with the packet sequence, not with byte offsets.
             try aead.decrypt(self.key, nonce, packet_plaintext, &[_]u8{}, tag, self.allocator);
 
             switch (packet_type) {
@@ -307,6 +355,10 @@ pub const DecryptSession = struct {
                     if (self.saw_metadata) return error.DuplicateMetadata;
 
                     if (self.filename) |f| self.allocator.free(f);
+
+                    
+                    // Keep an owned copy of the filename because packet_plaintext
+                    // is temporary and freed at the end of this loop iteration.
                     self.filename = try self.allocator.dupe(u8, packet_plaintext[2 .. 2 + fn_len]);
                     self.saw_metadata = true;
 
@@ -345,6 +397,8 @@ pub const DecryptSession = struct {
                     if (packet_plaintext.len != INTEGRITY_PACKET_SIZE) return error.InvalidIntegrityPacket;
                     if (self.saw_integrity) return error.DuplicateIntegrityPacket;
 
+                    // Integrity is delayed until near the end because it describes
+                    // the fully reconstructed plaintext, not individual packets.
                     self.expected_plaintext_size = std.mem.readInt(u64, packet_plaintext[0..8], .little);
 
                     var digest: [32]u8 = undefined;
@@ -372,6 +426,7 @@ pub const DecryptSession = struct {
                         return error.IntegrityHashMismatch;
                     }
 
+                    // DONE only succeeds after the full-file integrity check passes.
                     self.saw_done = true;
                     pos = frame_end;
                     break;
@@ -384,6 +439,8 @@ pub const DecryptSession = struct {
         }
 
         if (pos > 0) {
+            // Compact any leftover partial frame to the front so the next pushBytes()
+            // call can continue parsing without reallocating a new buffer.
             const remaining_len = self.pending.items.len - pos;
             std.mem.copyForwards(u8, self.pending.items[0..remaining_len], self.pending.items[pos..]);
             self.pending.items.len = remaining_len;
