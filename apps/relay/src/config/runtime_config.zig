@@ -27,7 +27,7 @@ pub fn load(allocator: std.mem.Allocator) !RuntimeConfig {
         .max_append_body_bytes = try parseEnvOrDefault(usize, allocator, "ZEND_MAX_APPEND_BODY_BYTES", defaults.MAX_APPEND_BODY_SIZE),
         .ttl_seconds = try parseEnvOrDefault(i64, allocator, "ZEND_TTL_SECONDS", defaults.TTL_SECONDS),
         .incomplete_ttl_seconds = try parseEnvOrDefault(i64, allocator, "ZEND_INCOMPLETE_TTL_SECONDS", defaults.INCOMPLETE_TTL_SECONDS),
-        .allowed_origins = try envOrDefault(allocator, "ZEND_ALLOWED_ORIGINS", "https://zend.foo"),
+        .allowed_origins = try envOrDefault(allocator, "ZEND_ALLOWED_ORIGINS", "https://www.zend.foo"),
         .rate_limit_window_seconds = try parseEnvOrDefault(i64, allocator, "ZEND_RATE_LIMIT_WINDOW_SECONDS", defaults.RATE_LIMIT_WINDOW_SECONDS),
         .rate_limit_max_requests_per_ip = try parseEnvOrDefault(u32, allocator, "ZEND_RATE_LIMIT_MAX_REQUESTS_PER_IP", defaults.RATE_LIMIT_MAX_REQUESTS_PER_IP),
         .rate_limit_max_upload_starts_per_ip = try parseEnvOrDefault(u32, allocator, "ZEND_RATE_LIMIT_MAX_UPLOAD_STARTS_PER_IP", defaults.RATE_LIMIT_MAX_UPLOAD_STARTS_PER_IP),
