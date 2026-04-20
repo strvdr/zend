@@ -1,5 +1,7 @@
 # zend
 
+[![CI](https://github.com/strvdr/zend-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/strvdr/zend-relay/actions/workflows/ci.yml)
+
 `zend` is an encrypted file transfer project built mostly in Zig.
 
 Today the repo contains two related transfer paths:
@@ -36,6 +38,7 @@ packages/
   wasm/      Zig -> WebAssembly build used by the web client
 docs/
   relay-docs/ relay design notes
+  system-docs/ architecture and security model notes
 ```
 
 ## Components
@@ -217,6 +220,31 @@ The repo includes two helper scripts at the top level:
 - `./build_relay.sh` builds the relay and deploys it to `/opt/zend-relay` via `systemctl`
 
 `build_relay.sh` is clearly meant for the current production host, not for generic local development.
+
+## Verification
+
+From the repo root:
+
+```bash
+zig build test
+zig build check
+```
+
+From `apps/web`:
+
+```bash
+pnpm lint
+pnpm build
+```
+
+These are also the checks currently exercised in CI.
+
+## Documentation
+
+Long-form project notes live under `docs/`.
+
+- `docs/relay-docs/zend-relay-docs.tex`
+- `docs/system-docs/zend-system-docs.tex`
 
 ## Current state of the project
 
