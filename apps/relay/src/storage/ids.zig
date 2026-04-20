@@ -19,3 +19,28 @@ pub fn isValidId(id: []const u8) bool {
     }
     return true;
 }
+
+test "randomHex returns lowercase fixed-width hex" {
+    const id = randomHex();
+
+    try std.testing.expectEqual(@as(usize, 16), id.len);
+    for (id) |c| {
+        try std.testing.expect(std.ascii.isDigit(c) or (c >= 'a' and c <= 'f'));
+    }
+}
+
+test "isValidId accepts safe ids and rejects unsafe path-like ids" {
+    try std.testing.expect(isValidId("abc123"));
+    try std.testing.expect(isValidId("A_b-c_123"));
+
+    try std.testing.expect(!isValidId(""));
+    try std.testing.expect(!isValidId("../secret"));
+    try std.testing.expect(!isValidId("with/slash"));
+    try std.testing.expect(!isValidId("with space"));
+    try std.testing.expect(!isValidId("semi:semicolon"));
+    try std.testing.expect(!isValidId("trailing."));
+    try std.testing.expect(!isValidId("null\x00byte"));
+
+    const too_long = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    try std.testing.expect(!isValidId(too_long));
+}

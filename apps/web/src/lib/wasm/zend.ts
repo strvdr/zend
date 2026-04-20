@@ -59,10 +59,6 @@ type DownloadProgress = {
   done: boolean;
 };
 
-function hex(bytes: Uint8Array) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function logDebug(label: string, value: unknown) {
   console.log(`[zend] ${label}`, value);
 }
@@ -131,12 +127,6 @@ function takeResultFilename(exports: WasmExports) {
 
 function utf8(input: string) {
   return new TextEncoder().encode(input);
-}
-
-function readError(exports: WasmExports) {
-  const ptr = exports.error_ptr();
-  const len = exports.error_len();
-  return new TextDecoder().decode(readBytes(exports.memory, ptr, len));
 }
 
 function normalizeWasmError(message: string) {
@@ -325,7 +315,6 @@ export async function uploadEncryptedFileChunked(
 
   let uploadId = "";
   let uploadToken = "";
-  let totalCiphertextBytes = 0;
   let fileBytesProcessed = 0;
 
   try {
@@ -367,8 +356,6 @@ export async function uploadEncryptedFileChunked(
       throw new Error("Missing metadata frame");
     }
 
-    totalCiphertextBytes += metadataFrame.length;
-
     onPhase?.("uploading");
     onProgress?.({
       phase: "uploading",
@@ -406,8 +393,6 @@ export async function uploadEncryptedFileChunked(
         throw new Error(`Missing encrypted frame at index ${index}`);
       }
 
-      totalCiphertextBytes += frame.length;
-       
       await postBytes(
         `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,
         frame,
@@ -433,8 +418,6 @@ export async function uploadEncryptedFileChunked(
     if (doneFrame.length === 0) {
       throw new Error("Missing DONE frame");
     }
-
-    totalCiphertextBytes += doneFrame.length;
 
     await postBytes(
       `${relayUrl}/upload/append/${uploadId}?token=${encodeURIComponent(uploadToken)}&index=${index}`,

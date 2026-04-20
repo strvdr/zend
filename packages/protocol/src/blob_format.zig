@@ -158,7 +158,7 @@ pub const EncryptSession = struct {
         const compressed = huffman.encode(plaintext_chunk, self.allocator) catch null;
         defer if (compressed) |c| self.allocator.free(c);
 
-         // Compression is opportunistic: only use it when it actually wins.
+        // Compression is opportunistic: only use it when it actually wins.
         const use_compression = if (compressed) |c| c.len < plaintext_chunk.len else false;
         const payload = if (use_compression) compressed.? else plaintext_chunk;
         const flag: u8 = if (use_compression) 0x01 else 0x00;
@@ -200,7 +200,6 @@ pub const EncryptSession = struct {
         var hasher = self.plaintext_hasher;
         hasher.final(&digest);
 
-        
         // The integrity packet authenticates the recovered plaintext as a whole.
         // It lets the decoder verify both final size and final hash before
         // treating the file as complete.
@@ -318,7 +317,6 @@ pub const DecryptSession = struct {
             const total_frame_bytes = pkt.FRAME_LEN_SIZE + frame_len;
             if (available < total_frame_bytes) break;
 
-            
             // At this point we know we have one full frame buffered.
             // Anything incomplete stays in pending until more bytes arrive.
             const frame_start = pos + pkt.FRAME_LEN_SIZE;
@@ -356,7 +354,6 @@ pub const DecryptSession = struct {
 
                     if (self.filename) |f| self.allocator.free(f);
 
-                    
                     // Keep an owned copy of the filename because packet_plaintext
                     // is temporary and freed at the end of this loop iteration.
                     self.filename = try self.allocator.dupe(u8, packet_plaintext[2 .. 2 + fn_len]);
@@ -527,4 +524,91 @@ pub fn decryptFileBuffer(
         .bytes = try out.toOwnedSlice(allocator),
         .verified = true,
     };
+}
+
+test "blob format round trips multi-chunk payload and preserves metadata" {
+    var plaintext = std.ArrayList(u8){};
+    defer plaintext.deinit(std.testing.allocator);
+
+    try plaintext.appendNTimes(std.testing.allocator, 'A', pkt.CHUNK_SIZE + 173);
+    for (0..(pkt.CHUNK_SIZE + 911)) |i| {
+        try plaintext.append(std.testing.allocator, @intCast(i % 251));
+    }
+
+    const filename = "archive.tar";
+    const key = [_]u8{0x42} ** 32;
+
+    const blob = try encryptFileBuffer(std.testing.allocator, plaintext.items, filename, key);
+    defer std.testing.allocator.free(blob);
+
+    var decrypted = try decryptFileBuffer(std.testing.allocator, blob, key);
+    defer decrypted.deinit(std.testing.allocator);
+
+    try std.testing.expect(decrypted.verified);
+    try std.testing.expectEqualStrings(filename, decrypted.filename);
+    try std.testing.expectEqualSlices(u8, plaintext.items, decrypted.bytes);
+}
+
+test "decrypt session handles incremental frame delivery" {
+    var plaintext = std.ArrayList(u8){};
+    defer plaintext.deinit(std.testing.allocator);
+
+    for (0..(pkt.CHUNK_SIZE * 2 + 257)) |i| {
+        try plaintext.append(std.testing.allocator, @intCast((i * 17 + 31) % 256));
+    }
+
+    const filename = "streamed.bin";
+    const key = [_]u8{0x7a} ** 32;
+
+    const blob = try encryptFileBuffer(std.testing.allocator, plaintext.items, filename, key);
+    defer std.testing.allocator.free(blob);
+
+    var session = DecryptSession.init(std.testing.allocator, key);
+    defer session.deinit();
+
+    var recovered = std.ArrayList(u8){};
+    defer recovered.deinit(std.testing.allocator);
+
+    var pos: usize = 0;
+    while (pos < blob.len) {
+        const chunk_len = @min(3 + (pos % 23), blob.len - pos);
+        try session.pushBytes(blob[pos .. pos + chunk_len]);
+        try recovered.appendSlice(std.testing.allocator, session.outputSlice());
+        pos += chunk_len;
+    }
+
+    try std.testing.expect(session.isDone());
+    try std.testing.expectEqualStrings(filename, session.filenameSlice().?);
+    try std.testing.expectEqualSlices(u8, plaintext.items, recovered.items);
+}
+
+test "blob format rejects tampered ciphertext" {
+    const plaintext = "this blob should fail authentication when modified";
+    const key = [_]u8{0x19} ** 32;
+
+    const blob = try encryptFileBuffer(std.testing.allocator, plaintext, "tampered.txt", key);
+    defer std.testing.allocator.free(blob);
+
+    var tampered = try std.testing.allocator.dupe(u8, blob);
+    defer std.testing.allocator.free(tampered);
+
+    tampered[tampered.len - 8] ^= 0x55;
+
+    try std.testing.expectError(
+        error.AuthenticationFailed,
+        decryptFileBuffer(std.testing.allocator, tampered, key),
+    );
+}
+
+test "blob format rejects truncated blob" {
+    const plaintext = "short file";
+    const key = [_]u8{0xa4} ** 32;
+
+    const blob = try encryptFileBuffer(std.testing.allocator, plaintext, "truncated.txt", key);
+    defer std.testing.allocator.free(blob);
+
+    try std.testing.expectError(
+        error.IncompleteStream,
+        decryptFileBuffer(std.testing.allocator, blob[0 .. blob.len - 1], key),
+    );
 }

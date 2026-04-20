@@ -257,7 +257,7 @@ pub fn run(url: []const u8, outputDir: []const u8, allocator: std.mem.Allocator)
 
     const parsed = parseUrl(url) catch |err| {
         std.debug.print("Error: invalid zend URL ({s})\n", .{@errorName(err)});
-        std.debug.print("Expected: https://www.zend.foo/d/{{id}}#{{key}}\n", .{});
+        std.debug.print("Expected: {s}/d/{{id}}#{{key}}\n", .{relay.DEFAULT_APP_URL});
         return err;
     };
 

@@ -125,3 +125,66 @@ fn retryAfter(now: i64, started: i64, window: i64) u32 {
     if (remaining <= 0) return 1;
     return @intCast(remaining);
 }
+
+fn testConfig() runtime_config.RuntimeConfig {
+    return .{
+        .host = "127.0.0.1",
+        .port = 8080,
+        .blob_dir = "blobs",
+        .max_upload_bytes = 1024,
+        .max_append_body_bytes = 256,
+        .ttl_seconds = 60,
+        .incomplete_ttl_seconds = 60,
+        .allowed_origins = "*",
+        .rate_limit_window_seconds = 60,
+        .rate_limit_max_requests_per_ip = 3,
+        .rate_limit_max_upload_starts_per_ip = 1,
+        .rate_limit_max_upload_appends_per_ip = 2,
+        .rate_limit_max_upload_finishes_per_ip = 1,
+        .rate_limit_max_downloads_per_ip = 1,
+    };
+}
+
+test "rate limiter enforces per-route caps before total cap" {
+    var limiter = RateLimiter.init(std.testing.allocator, testConfig());
+    defer limiter.deinit();
+
+    const ip = "203.0.113.10";
+
+    try std.testing.expect((try limiter.allow(ip, .upload_start)).allowed);
+
+    const second = try limiter.allow(ip, .upload_start);
+    try std.testing.expect(!second.allowed);
+    try std.testing.expect(second.retry_after_seconds > 0);
+}
+
+test "rate limiter enforces total request cap across route kinds" {
+    var limiter = RateLimiter.init(std.testing.allocator, testConfig());
+    defer limiter.deinit();
+
+    const ip = "203.0.113.11";
+
+    try std.testing.expect((try limiter.allow(ip, .other)).allowed);
+    try std.testing.expect((try limiter.allow(ip, .upload_append)).allowed);
+    try std.testing.expect((try limiter.allow(ip, .upload_finish)).allowed);
+
+    const blocked = try limiter.allow(ip, .download);
+    try std.testing.expect(!blocked.allowed);
+    try std.testing.expect(blocked.retry_after_seconds > 0);
+}
+
+test "rate limiter resets counters after the window expires" {
+    var limiter = RateLimiter.init(std.testing.allocator, testConfig());
+    defer limiter.deinit();
+
+    const ip = "203.0.113.12";
+
+    try std.testing.expect((try limiter.allow(ip, .download)).allowed);
+
+    const entry = limiter.entries.getPtr(ip).?;
+    entry.window_started_at = std.time.timestamp() - limiter.cfg.rate_limit_window_seconds - 1;
+
+    const allowed_again = try limiter.allow(ip, .download);
+    try std.testing.expect(allowed_again.allowed);
+    try std.testing.expectEqual(@as(u32, 0), allowed_again.retry_after_seconds);
+}

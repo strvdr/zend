@@ -139,7 +139,10 @@ pub fn runRelay(filePath: []const u8, allocator: std.mem.Allocator) !void {
     var key_encoded: [std.base64.url_safe_no_pad.Encoder.calcSize(32)]u8 = undefined;
     _ = std.base64.url_safe_no_pad.Encoder.encode(&key_encoded, &session_key);
 
-    const share_url = try std.fmt.allocPrint(allocator, "{s}/d/{s}#{s}", .{ relay.APP_URL, upload.id, key_encoded });
+    const app_url = try relay.appUrl(allocator);
+    defer allocator.free(app_url);
+
+    const share_url = try std.fmt.allocPrint(allocator, "{s}/d/{s}#{s}", .{ app_url, upload.id, key_encoded });
     defer allocator.free(share_url);
 
     progress.printStep("done", "upload complete", .{});

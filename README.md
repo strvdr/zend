@@ -146,7 +146,7 @@ Defaults in the current relay code:
 - finished blob TTL `24h`
 - incomplete upload TTL `1h`
 
-Note: the runtime config includes `ZEND_RELAY_HOST`, but the current relay entrypoint binds to `0.0.0.0` in code.
+The relay now binds using `ZEND_RELAY_HOST` and `ZEND_RELAY_PORT`.
 
 ## 2. Build the WASM module
 
@@ -202,12 +202,12 @@ zend :9000
 zend ./report.pdf 192.168.1.42:9000
 ```
 
-The relay-facing CLI currently uses baked-in production constants in `apps/cli/src/relay/relay.zig` for:
+The relay-facing CLI defaults to the production URLs, but you can override them with:
 
-- `https://relay.zend.foo`
-- `https://www.zend.foo`
+- `ZEND_CLI_RELAY_URL`
+- `ZEND_CLI_APP_URL`
 
-So for local relay testing, the web app is the easier path unless you also change those CLI constants.
+That makes local relay testing possible without patching the CLI source.
 
 ## Convenience scripts
 
@@ -232,4 +232,4 @@ What is implemented today:
 
 - The relay stores ciphertext only, but it still sees blob size, timing, IPs, and request metadata.
 - The current download route reads the full stored blob into memory before responding, even though the client decrypt path is incremental.
-- The web app and CLI are not perfectly symmetrical in configuration yet; the web app is environment-driven, while the CLI relay URLs are hard-coded.
+- The web app and CLI still expose configuration in different ways, even though both are now overrideable at runtime.
