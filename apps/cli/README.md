@@ -1,115 +1,94 @@
-# zend
+# zend cli
 
-Encrypted file transfer over TCP. Built from scratch in Zig — no libraries for networking, encryption, or compression.
+The CLI supports two different transfer modes:
 
-## What it does
+- relay-backed upload and download
+- direct peer-to-peer transfer over TCP
 
-Send a file from one machine to another over an encrypted connection. The receiver listens, the sender connects, and the file is transferred with compression and authenticated encryption. That's it.
+That makes it both a practical command-line client for the main Zend share flow and a lower-level direct transfer tool.
 
-```
-Sender                              Receiver
-  │                                     │
-  │<-- X25519 key exchange ------------>│
-  │                                     │
-  │-- encrypted file chunks ----------->│
-  │                                     │
-  │<-- acknowledgment ------------------│
-```
+## Modes
 
-## Quick start
+### Relay-backed
 
 ```bash
-zig build
+zend ./report.pdf
+zend 'https://www.zend.foo/d/<id>#<key>'
 ```
 
-```bash
-sudo ln -s $(pwd)/zig-out/bin/zend /usr/local/bin/zend
-```
+- `zend <file>` encrypts locally, uploads to the relay, and prints a share URL
+- `zend <url>` downloads from the relay and decrypts locally
 
-On the receiving machine:
+### Direct peer-to-peer
 
 ```bash
 zend
-# Listening on port 9000...
+zend :4567
+zend ./report.pdf 192.168.1.42
+zend ./report.pdf 192.168.1.42:4567
 ```
 
-On the sending machine:
+- `zend` or `zend :port` listens for an incoming direct transfer
+- `zend <file> <peer>` sends directly to another CLI instance
+
+Legacy explicit commands still work:
 
 ```bash
-zend ./myfile.tar 192.168.1.42
-```
-
-## Usage
-
-The CLI infers whether you're sending or receiving. If you pass a file, you're sending. Otherwise, you're listening.
-
-```bash
-# Receive
-zend                                  # listen on :9000, save to cwd
-zend :4567                            # listen on custom port
-zend --out /tmp/received              # save files to a specific directory
-
-# Send
-zend ./photo.jpg 192.168.1.42        # send to host, default port 9000
-zend ./photo.jpg 192.168.1.42:4567   # send to host on custom port
-zend ./photo.jpg                     # send to localhost (for testing)
-
-# Explicit mode (also works)
-zend send --host 192.168.1.42 --port 9000 ./photo.jpg
+zend send --host 192.168.1.42 --port 9000 ./report.pdf
 zend recv --port 9000 --out /tmp
 ```
 
+## Local build
+
+From this directory:
+
+```bash
+zig build
+sudo ln -sf "$(pwd)/zig-out/bin/zend" /usr/local/bin/zend
+zend --help
+```
+
+## Relay configuration
+
+The CLI defaults to the production relay URLs, but you can override them at runtime:
+
+- `ZEND_CLI_RELAY_URL`
+- `ZEND_CLI_APP_URL`
+
+That is the easiest way to point the CLI at a local or self-hosted relay.
+
 ## How it works
 
-Everything is implemented by hand as a learning exercise:
+### Relay-backed flow
 
-- **X25519** key exchange — both sides generate ephemeral keypairs and derive a shared secret without ever transmitting it
-- **ChaCha20-Poly1305** authenticated encryption — every packet is encrypted and authenticated with a unique nonce. Tampered packets are rejected immediately
-- **Huffman compression** — file chunks are compressed before encryption, with adaptive fallback (skips compression if it would make the data larger)
-- **Length-prefixed framing** — TCP is a byte stream, so each message is preceded by a 4-byte length header to recover message boundaries
-- **Monotonic nonce counter** — each encrypted packet gets a unique nonce derived from a random connection ID and an incrementing counter
+- generate a random 32-byte file key locally
+- encrypt and frame the file using the shared Zig blob format
+- upload ciphertext to the relay
+- print a share URL whose fragment contains the decryption key
+- on download, fetch ciphertext, decrypt locally, and verify integrity
 
-File data is sent in 64 KiB chunks. Each chunk is independently compressed, encrypted, framed, and sent over TCP.
+### Direct peer-to-peer flow
 
-## Project structure
+- connect sender and receiver over TCP
+- perform an X25519 handshake
+- transfer framed, encrypted file chunks directly
 
-```
-src/
-├── main.zig              CLI entry point
-├── send.zig              Sender orchestration
-├── recv.zig              Receiver orchestration
-├── net/
-│   ├── tcp.zig           TCP connect/listen/accept
-│   └── framing.zig       Length-prefixed message framing
-├── crypto/
-│   ├── x25519.zig        Diffie-Hellman key exchange
-│   ├── chacha20.zig      ChaCha20 stream cipher
-│   ├── poly1305.zig      Poly1305 MAC
-│   └── aead.zig          ChaCha20-Poly1305 AEAD
-├── compress/
-│   ├── huffman.zig       Huffman encoding/decoding
-│   └── bitwriter.zig     Bit-level writer
-└── protocol/
-    ├── handshake.zig     Key exchange state machine
-    ├── transfer.zig      Chunked file transfer
-    └── message.zig       Packet types and serialization
-```
+## Shared implementation
+
+The CLI reuses the same shared Zig crypto, compression, and blob-format code used elsewhere in the repo. That means the relay-aware CLI and the browser client speak the same encrypted blob format.
 
 ## Tests
 
-Each module has inline tests validated against RFC test vectors where applicable (RFC 7748 for X25519, RFC 8439 for ChaCha20-Poly1305).
+From this directory:
 
 ```bash
 zig build test
 ```
 
-## Requirements
+The test suite includes RFC/vector coverage for cryptographic primitives and protocol-level checks for the direct transfer path.
 
-Zig 0.15.2
+## Current limits
 
-## Limitations
-
-- Single file transfers only (no directories yet)
-- One transfer at a time
-- No resume on interrupted transfers
-- Both sides must be reachable over TCP (no NAT traversal)
+- direct mode has no NAT traversal
+- interrupted transfers do not resume
+- relay mode depends on the configured relay URL

@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# zend web
 
-## Getting Started
+The web app is the browser client for the relay-backed Zend flow.
 
-First, run the development server:
+It lets a sender encrypt a file in the browser, upload the ciphertext to the relay, and share a link whose fragment contains the decryption key. The recipient later opens that link, downloads the ciphertext, decrypts it client-side, and saves the recovered file.
+
+## What it includes
+
+- landing page at `/`
+- upload flow at `/upload`
+- download flow at `/d/[id]`
+- Zig/WASM-backed encryption and decryption in `src/lib/wasm`
+
+The relay-backed browser flow is the primary product surface in the current repository.
+
+## Local development
+
+From this directory:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
+NEXT_PUBLIC_RELAY_URL=http://localhost:8080 \
+NEXT_PUBLIC_APP_URL=http://localhost:3000 \
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `NEXT_PUBLIC_RELAY_URL`
+  Base URL for relay API requests
+- `NEXT_PUBLIC_APP_URL`
+  Base URL used when generating share links
 
-## Learn More
+## WASM dependency
 
-To learn more about Next.js, take a look at the following resources:
+The web app expects `public/zend_wasm.wasm` to exist.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+From the repo root, build and copy it with:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+./build_wasm.sh
+```
 
-## Deploy on Vercel
+## Checks
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+From this directory:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+pnpm lint
+pnpm build
+```
+
+## Notes
+
+- The current UI caps file size at 100 MB even though the relay default is higher.
+- The relay only receives ciphertext. The decryption key stays in the URL fragment and is not sent in HTTP requests.
