@@ -1,51 +1,50 @@
 # zend
 
-End-to-end encrypted file transfer built with Zig.
+`zend` is an encrypted file transfer project built mostly in Zig.
 
-`zend` is a file sharing system designed around a simple idea: the relay should be able to store and serve files without being able to read them. Files are encrypted on the client, uploaded as ciphertext, and retrieved through a single download link.
+Today the repo contains two related transfer paths:
 
-## Why
+- a relay-backed share flow, where files are encrypted client-side, uploaded as ciphertext, and shared with a link
+- a direct peer-to-peer CLI flow, where one machine sends a file straight to another over TCP
 
-Most file sharing tools make tradeoffs between convenience, privacy, and control. `zend` aims to keep the UX simple while preserving strong separation between:
+The relay-backed path is the center of the current repo: a Zig relay, a Next.js web app, and a Zig/WASM blob format implementation all exist and work together. The CLI also supports that relay flow, and still includes the older direct-transfer mode.
 
-- the **client**, which holds the key
-- the **relay**, which stores ciphertext
-- the **download link**, which points to the file without exposing plaintext to the server
+## What the relay flow looks like
 
-The result is a file transfer flow that feels lightweight, but keeps the relay untrusted with respect to file contents.
+1. A sender picks a file in the web app or CLI.
+2. The client generates a random 32-byte key locally.
+3. The file is framed, optionally compressed per chunk, encrypted with ChaCha20-Poly1305, and tagged with a whole-file integrity record.
+4. Ciphertext is uploaded to the relay in ordered append requests.
+5. The sender shares a link like `/d/{id}#{key}`.
+6. The relay only sees the blob ID and ciphertext. The decryption key stays in the URL fragment, so it is not sent in HTTP requests.
+7. The recipient downloads the blob, decrypts it client-side, verifies integrity, and saves the recovered file.
+8. After a successful download, the relay deletes the stored blob.
 
-## Features
+The relay also removes expired finished blobs and abandoned uploads on a background reaper loop.
 
-- End-to-end encrypted file transfer
-- Zig relay/server
-- Zig protocol implementation
-- Zig → WASM client-side crypto for browser upload/download
-- Streamed uploads using append/finalize flow
-- Download-once semantics
-- Expiring blobs and abandoned upload cleanup
-- Relay-side rate limiting
-- Simple HTTP API
+## Repo layout
 
-## How it works
+```text
+apps/
+  cli/       Zig CLI for relay uploads/downloads and direct peer-to-peer sends
+  relay/     Zig HTTP relay that stores encrypted blobs on disk
+  web/       Next.js web app for upload and download flows
+packages/
+  crypto/    ChaCha20, Poly1305, AEAD primitives
+  protocol/  blob framing, packet types, encrypt/decrypt sessions
+  compress/  Huffman encoder/decoder used opportunistically per chunk
+  wasm/      Zig -> WebAssembly build used by the web client
+docs/
+  relay-docs/ relay design notes
+```
 
-At a high level, `zend` works like this:
-
-1. The sender selects a file.
-2. The client encrypts the file before upload.
-3. Ciphertext is uploaded to the relay in framed chunks.
-4. The relay stores the encrypted blob and returns an ID/token pair for the upload session.
-5. A download link is shared with the recipient.
-6. The recipient downloads the ciphertext and decrypts it client-side using the key embedded in or distributed alongside the link.
-7. After download, the blob can be deleted or consumed depending on policy.
-
-The relay handles storage and transfer, but it does not need the decryption key.
-
-## Architecture
-
-The project is split into a few major pieces:
+## Components
 
 ### Relay
-The relay is written in Zig and exposes HTTP endpoints for:
+
+The relay is a small Zig HTTP server. It stores ciphertext on disk and never needs the decryption key.
+
+Current endpoints:
 
 - `POST /upload/start`
 - `POST /upload/append/{id}?token=...&index=...`
@@ -53,173 +52,184 @@ The relay is written in Zig and exposes HTTP endpoints for:
 - `GET /download/{id}`
 - `DELETE /delete/{id}?token=...`
 
-It is responsible for:
+Current behavior:
 
-- managing upload sessions
-- writing encrypted blobs to disk
-- serving downloads
-- deleting consumed or expired data managing upload sessions
-- writing encrypted blobs to disk
-- serving downloads
-- deleting consumed or expired data
-- rate limiting and basic abuse resistance
-- cleanup of stale temporary uploads
+- uploads are strictly ordered by chunk index
+- upload sessions use per-upload tokens
+- completed blobs are deleted after the first successful download
+- completed blobs also expire by TTL
+- incomplete uploads expire on a separate TTL
+- simple per-IP rate limiting is applied per route group
+- CORS responses are controlled with `ZEND_ALLOWED_ORIGINS`
 
-- rate limiting and basic abuse resistance
-- cleanup of stale temporary uploads
+### Web app
 
-### Protocol
-The protocol layer defines the framed packet format used for metadata, chunks, and completion markers. This keeps upload and download behavior structured and makes incremental parsing possible.
+The web frontend lives in `apps/web` and is built with Next.js.
 
-### Crypto
-Core crypto is implemented in Zig and compiled to WebAssembly for browser use. The current implementation includes components such as:
+It currently provides:
 
-- ChaCha20
-- Poly1305
-- AEAD construction
+- a landing page that explains the encrypted-link model
+- an upload page at `/upload`
+- a download page at `/d/[id]`
+- browser-side encryption and decryption through the WASM module in `apps/web/public/zend_wasm.wasm`
 
-This allows the browser to encrypt before upload and decrypt after download without handing the relay plaintext.
+The web upload UI currently caps files at 100 MB even though the relay default is higher.
 
-### Web client
-The web frontend provides upload and download flows on top of the relay and WASM crypto layer.
+### CLI
 
-## Security model
+The CLI in `apps/cli` supports both relay-backed and direct-transfer usage:
 
-`zend` is designed so that the relay stores encrypted data rather than plaintext.
+- `zend ./file` uploads to the relay and prints a share URL
+- `zend https://...` downloads from the relay and decrypts locally
+- `zend` or `zend :4567` listens for a direct incoming TCP transfer
+- `zend ./file 192.168.1.42[:port]` sends directly to another CLI instance
 
-That means:
+That means the CLI is not just a peer-to-peer toy anymore. In the current codebase it also speaks the relay upload/download flow.
 
-- the relay can see that a file exists
-- the relay can see blob sizes, timing, and request metadata
-- the relay can store and serve ciphertext
-- the relay should **not** have the key needed to decrypt the file contents
+## Crypto and format notes
 
-This is not the same as hiding all metadata from the relay, but it does reduce trust placed in the storage server.
+The shared Zig protocol code is used by the relay-aware CLI and the WASM build.
 
-## Relay behavior
+The current blob format includes:
 
-The relay currently supports:
+- encrypted metadata with the original filename and total plaintext size
+- encrypted chunk packets
+- opportunistic Huffman compression on a chunk-by-chunk basis
+- an integrity packet containing the final plaintext size and SHA-256 hash
+- a final DONE packet
 
-- upload sessions with per-upload tokens
-- bounded upload sizes
-- append body size limits
-- configurable TTLs
-- cleanup of incomplete uploads
-- per-IP rate limiting
-- single download / consume-on-read style flows
+For the relay-backed flow there is no interactive key exchange. The key is generated client-side and passed out-of-band via the URL fragment.
 
-Example runtime configuration includes values such as:
+For the direct CLI peer-to-peer flow there is a separate X25519 handshake and encrypted TCP transport.
 
-- host / port
-- blob directory
-- max upload bytes
-- max append size
-- TTL for finished blobs
-- TTL for incomplete uploads
-- allowed web origins
-- per-route rate limits
+## Local development
 
-## Configuration
+### Requirements
 
-The relay is configured through environment variables.
+- Zig `0.15.2`
+- Node.js
+- pnpm
 
-### Core settings
+## 1. Build and run the relay
 
-- `ZEND_RELAY_HOST`
-- `ZEND_RELAY_PORT`
-- `ZEND_BLOB_DIR`
-- `ZEND_MAX_UPLOAD_BYTES`
-- `ZEND_MAX_APPEND_BODY_BYTES`
-- `ZEND_TTL_SECONDS`
-- `ZEND_INCOMPLETE_TTL_SECONDS`
-- `ZEND_ALLOWED_ORIGINS`
+From `apps/relay`:
 
-### Rate limiting
+```bash
+zig build
+./zig-out/bin/zend-relay
+```
 
-- `ZEND_RATE_LIMIT_WINDOW_SECONDS`
-- `ZEND_RATE_LIMIT_MAX_REQUESTS_PER_IP`
-- `ZEND_RATE_LIMIT_MAX_UPLOAD_STARTS_PER_IP`
-- `ZEND_RATE_LIMIT_MAX_UPLOAD_APPENDS_PER_IP`
-- `ZEND_RATE_LIMIT_MAX_UPLOAD_FINISHES_PER_IP`
-- `ZEND_RATE_LIMIT_MAX_DOWNLOADS_PER_IP`
+Useful relay environment variables:
 
-## Development status
+```bash
+ZEND_RELAY_PORT=8080
+ZEND_BLOB_DIR=blobs
+ZEND_MAX_UPLOAD_BYTES=536870912
+ZEND_MAX_APPEND_BODY_BYTES=1048576
+ZEND_TTL_SECONDS=86400
+ZEND_INCOMPLETE_TTL_SECONDS=3600
+ZEND_ALLOWED_ORIGINS=http://localhost:3000
+ZEND_RATE_LIMIT_WINDOW_SECONDS=60
+ZEND_RATE_LIMIT_MAX_REQUESTS_PER_IP=240
+ZEND_RATE_LIMIT_MAX_UPLOAD_STARTS_PER_IP=20
+ZEND_RATE_LIMIT_MAX_UPLOAD_APPENDS_PER_IP=1200
+ZEND_RATE_LIMIT_MAX_UPLOAD_FINISHES_PER_IP=40
+ZEND_RATE_LIMIT_MAX_DOWNLOADS_PER_IP=120
+```
 
-`zend` is under active development.
+Defaults in the current relay code:
 
-Current areas of focus include:
+- port `8080`
+- blob dir `blobs`
+- max upload size `512 MiB`
+- max append body size `1 MiB`
+- finished blob TTL `24h`
+- incomplete upload TTL `1h`
 
-- polish of upload/download UX
-- production hardening
-- clearer error handling
-- relay abuse resistance
-- better deployment ergonomics
-- optional self-hosting improvements
+Note: the runtime config includes `ZEND_RELAY_HOST`, but the current relay entrypoint binds to `0.0.0.0` in code.
 
-## Goals
+## 2. Build the WASM module
 
-The long-term goal is to make secure file transfer feel simple:
+From the repo root:
 
-- upload a file
-- share a link
-- keep the relay out of the trust boundary for file contents
+```bash
+./build_wasm.sh
+```
 
-## Non-goals
+That builds `packages/wasm` and copies the output into `apps/web/public/zend_wasm.wasm`.
 
-At least for now, `zend` is not trying to be:
+## 3. Run the web app
 
-- a general-purpose cloud drive
-- a collaborative document platform
-- a full anonymity system
-- a replacement for object storage infrastructure
+From `apps/web`:
 
-## Running locally
+```bash
+pnpm install
+NEXT_PUBLIC_RELAY_URL=http://localhost:8080 \
+NEXT_PUBLIC_APP_URL=http://localhost:3000 \
+pnpm dev
+```
 
-Local setup depends on how you’ve structured the repo, but the general flow is:
+Then open `http://localhost:3000`.
 
-1. Build the Zig relay
-2. Start the relay with a local blob directory
-3. Build the WASM module
-4. Serve the web frontend
-5. Upload a file and test retrieval through the generated link
+The web app depends on:
 
-You will likely also want to configure:
+- `NEXT_PUBLIC_RELAY_URL` for relay API requests
+- `NEXT_PUBLIC_APP_URL` for the share links it generates
 
-- allowed origins for local frontend development
-- max upload sizes for testing
-- shorter TTLs while iterating
+## 4. Build and use the CLI
 
-## Project structure
+From `apps/cli`:
 
-The codebase currently includes pieces for:
+```bash
+zig build
+sudo ln -sf "$(pwd)/zig-out/bin/zend" /usr/local/bin/zend
+zend --help
+```
 
-- relay routing and HTTP helpers
-- upload/download/delete handlers
-- storage path management
-- runtime configuration
-- reaper/cleanup loop
-- rate limiting
-- blob framing / packet types
-- crypto primitives
-- WASM/browser integration
+Examples:
 
-## Roadmap
+```bash
+# Upload to relay and print a share URL
+zend ./report.pdf
 
-- [x] Client-side encryption
-- [x] Relay upload/download endpoints
-- [x] Streaming append flow
-- [x] Cleanup for stale uploads
-- [x] Rate limiting
-- [ ] More complete self-hosting docs
-- [ ] Better deployment docs
-- [ ] Multi-user / account-backed relay support
-- [ ] Quotas and billing-aware relay policies
-- [ ] Improved product polish
+# Download from relay
+zend 'https://www.zend.foo/d/<id>#<key>'
 
-## Contributing
+# Receive a direct peer-to-peer transfer
+zend :9000
 
-The project is still moving quickly, so APIs and internals may change. Issues, feedback, and design discussion are welcome.
+# Send directly to another machine
+zend ./report.pdf 192.168.1.42:9000
+```
 
-## License
+The relay-facing CLI currently uses baked-in production constants in `apps/cli/src/relay/relay.zig` for:
 
-TBD
+- `https://relay.zend.foo`
+- `https://www.zend.foo`
+
+So for local relay testing, the web app is the easier path unless you also change those CLI constants.
+
+## Convenience scripts
+
+The repo includes two helper scripts at the top level:
+
+- `./build_wasm.sh` builds the WASM artifact and copies it into the web app
+- `./build_relay.sh` builds the relay and deploys it to `/opt/zend-relay` via `systemctl`
+
+`build_relay.sh` is clearly meant for the current production host, not for generic local development.
+
+## Current state of the project
+
+What is implemented today:
+- relay-backed encrypted uploads and downloads
+- browser upload/download flows using Zig/WASM
+- single-use relay downloads with TTL-based cleanup
+- relay-side rate limiting
+- a Zig CLI that can upload to the relay, download from the relay, or transfer directly over TCP
+- shared crypto, framing, compression, and integrity code used across targets
+
+## A few implementation caveats
+
+- The relay stores ciphertext only, but it still sees blob size, timing, IPs, and request metadata.
+- The current download route reads the full stored blob into memory before responding, even though the client decrypt path is incremental.
+- The web app and CLI are not perfectly symmetrical in configuration yet; the web app is environment-driven, while the CLI relay URLs are hard-coded.
